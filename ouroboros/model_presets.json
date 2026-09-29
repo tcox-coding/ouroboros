@@ -1,0 +1,211 @@
+{
+  "_comment": "Recommended judge settings per vision model. Choosing a model in Settings fills these in (the first preset that fits both the backend in use and the model name wins; a preset without 'backends' fits any). 'prompt_token_budget' is an absolute cap on the judge prompt: long-context accuracy starts dropping around 10-20% of a model's window and the middle of a long prompt is recalled worst, so prompts are kept short and the key parts sit at the start and end.",
+  "presets": [
+    {
+      "match": "^deepseek-ai/DeepSeek-V4",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "DeepSeek V4 Flash (DeepInfra)",
+      "notes": "Hosted vision model: nothing to load locally, several calls can run at once, and a judged round costs a fraction of a cent. It reasons before answering, so leave room for the answer (max_tokens 8192). Temperature 0 keeps the same image's score stable between looks, which is what makes the pass threshold mean anything.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 8192,
+            "context_tokens": 163840,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 3,
+          "prompt_token_budget": 12000
+        }
+      }
+    },
+    {
+      "match": "qwen3-vl.*thinking|^qwen3-vl:\\d+b$|^qwen3-vl$",
+      "label": "Qwen3-VL (thinking)",
+      "notes": "Thinks before answering: 100-270 s per judge call in tests, and at temperature 0 it loops until num_predict. Prefer an -instruct tag.",
+      "settings": {
+        "judge": {
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "ollama": {
+            "num_ctx": 20480,
+            "num_predict": 8192,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "think": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000
+        }
+      },
+      "backends": [
+        "ollama"
+      ]
+    },
+    {
+      "match": "qwen3-vl",
+      "label": "Qwen3-VL instruct",
+      "notes": "Temperature 0: judging the same image twice moved the score by 0.3-0.5 points, against 8-10 points at 0.7, at the same speed (measured with python -m ouroboros eval). A stable score is what makes the threshold mean something.",
+      "settings": {
+        "judge": {
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "ollama": {
+            "num_ctx": 16384,
+            "num_predict": 4096,
+            "temperature": 0,
+            "top_p": 0.8,
+            "top_k": 20,
+            "think": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000
+        }
+      },
+      "backends": [
+        "ollama"
+      ]
+    },
+    {
+      "match": "qwen2\\.?5-?vl",
+      "label": "Qwen2.5-VL",
+      "notes": "Temperature 0: judging the same image twice moved the score by 0.3-0.5 points, against 8-10 points at 0.7, at the same speed (measured with python -m ouroboros eval). A stable score is what makes the threshold mean something.",
+      "settings": {
+        "judge": {
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "ollama": {
+            "num_ctx": 16384,
+            "num_predict": 4096,
+            "temperature": 0,
+            "top_p": 0.8,
+            "top_k": 20,
+            "think": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 7000
+        }
+      },
+      "backends": [
+        "ollama"
+      ]
+    },
+    {
+      "match": "llama3\\.2-vision",
+      "label": "Llama 3.2 Vision",
+      "notes": "One image per message, so the reference and candidates go as one grid (up to 1120 px). Older uploads such as Drews54/llama3.2-vision-abliterated don't load in Ollama 0.34+.",
+      "settings": {
+        "judge": {
+          "contact_sheet": true,
+          "contact_sheet_size": 1120,
+          "image_max_side": 512,
+          "ollama": {
+            "num_ctx": 16384,
+            "num_predict": 4096,
+            "temperature": 0.6,
+            "top_p": 0.9,
+            "top_k": null,
+            "think": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 6000
+        }
+      },
+      "backends": [
+        "ollama"
+      ]
+    },
+    {
+      "match": "gemma3",
+      "label": "Gemma 3",
+      "notes": "Several images per message; Google's recommended sampling.",
+      "settings": {
+        "judge": {
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "ollama": {
+            "num_ctx": 16384,
+            "num_predict": 4096,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 64,
+            "think": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000
+        }
+      },
+      "backends": [
+        "ollama"
+      ]
+    },
+    {
+      "match": "^gpt-|^o\\d",
+      "label": "OpenAI",
+      "notes": "Large window; the budget still keeps prompts short and cheap.",
+      "settings": {
+        "judge": {
+          "backend": "openai",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "openai": {
+            "reasoning_effort": "low",
+            "image_detail": "low"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 3,
+          "prompt_token_budget": 20000
+        }
+      },
+      "backends": [
+        "openai"
+      ]
+    },
+    {
+      "match": ".",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "DeepInfra hosted model",
+      "notes": "Generic settings for a hosted vision model. Check the model's page for its context window and whether it reasons before answering (which needs a larger max_tokens).",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 131072,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000
+        }
+      }
+    }
+  ]
+}

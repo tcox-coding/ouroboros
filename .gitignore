@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Your settings and secrets (config.example.json holds the shared defaults)
+config.json
+api_keys.json
+api_keys.tmp
+deepinfra_key.txt
+
+# Your ComfyUI workflow and its node map (the example pair is shared)
+workflows/*
+!workflows/nodes.example.json
+!workflows/example_workflow.json
+
+# Generated and personal data: renders, jobs, poses, caches, logs, judge test set
+runs/*
+!runs/.keep
+jobs/*/*
+!jobs/pending/.keep
+poses/*
+!poses/.keep
+eval/*
+!eval/.keep
+cache/
+logs/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

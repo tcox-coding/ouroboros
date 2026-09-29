@@ -1,0 +1,162 @@
+{
+  "comfy_url": "http://127.0.0.1:8188",
+  "web": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "prompt_library": "../prompt-generator/output",
+  "judge": {
+    "backend": "deepinfra",
+    "deepinfra": {
+      "url": "https://api.deepinfra.com/v1/openai",
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "temperature": 0,
+      "top_p": null,
+      "max_tokens": 16384,
+      "context_tokens": 163840,
+      "reasoning_effort": null,
+      "retries": 2,
+      "timeout": 600,
+      "price_per_mtok": {
+        "input": 0.2,
+        "cached_input": 0.006,
+        "output": 0.6
+      }
+    },
+    "image_max_side": 512,
+    "contact_sheet": false,
+    "contact_sheet_size": 1120,
+    "ollama": {
+      "url": "http://localhost:11434",
+      "model": "huihui_ai/qwen3-vl-abliterated:8b-instruct",
+      "temperature": null,
+      "num_ctx": 16384,
+      "num_predict": 4096,
+      "retries": 2,
+      "keep_alive": "30m",
+      "think": null,
+      "timeout": 600
+    },
+    "openai": {
+      "model": "gpt-5",
+      "reasoning_effort": "low",
+      "image_detail": "low",
+      "price_per_mtok": {
+        "input": 1.25,
+        "cached_input": 0.125,
+        "output": 10.0
+      }
+    },
+    "rubric": {
+      "identity": {
+        "weight": 3,
+        "anchors": "Same character: face, hair, body type, outfit. 10 = indistinguishable character; 7 = same character, minor differences; 4 = same archetype, clear differences; 0 = unrelated."
+      },
+      "composition": {
+        "weight": 2,
+        "anchors": "Pose, framing, camera angle, placement. 10 = matches; 5 = similar framing, different pose; 0 = unrelated."
+      },
+      "style": {
+        "weight": 2,
+        "anchors": "Line work, shading, rendering style. 10 = same artist look; 5 = same medium, different treatment; 0 = different medium."
+      },
+      "color": {
+        "weight": 1.5,
+        "anchors": "Palette of hair, skin, clothing, background. 10 = matches; 5 = right hues, wrong values; 0 = wrong colours."
+      },
+      "quality": {
+        "weight": 1.5,
+        "anchors": "Anatomy and artifacts (hands, limbs, faces, duplicates, text). 10 = clean; 5 = one noticeable flaw; 0 = broken."
+      }
+    },
+    "rubric_optional": {
+      "extras": {
+        "weight": 1.5,
+        "anchors": "Items or details the reference does NOT have (accessories, emblems, patches, straps, jewelry, props, extra clothing layers). 10 = nothing extra; 6 = one small addition; 3 = one prominent addition or several small ones; 0 = many."
+      }
+    },
+    "scoring": "per_candidate",
+    "confirm_model": ""
+  },
+  "loop": {
+    "threshold": 62,
+    "max_rounds": 10,
+    "max_cost_usd": 0.5,
+    "plateau_rounds": 3,
+    "candidates_per_round": 4,
+    "send_top_k": 3,
+    "local_prefilter": true,
+    "min_reference_denoise": 0.7,
+    "allow_inpaint_reference": false,
+    "confirm_pass": true,
+    "penalize_extras": true,
+    "prompt_sees_reference": true,
+    "history_keep_rounds": 2,
+    "refine_gate": {
+      "identity": 7,
+      "composition": 7
+    },
+    "prompt_token_budget": 8000,
+    "hand_refine": false,
+    "controlled_seed": true
+  },
+  "queue": {
+    "parallel_jobs": 2,
+    "llm_parallel": 4
+  },
+  "defaults": {
+    "mode": "txt2img",
+    "steps": 30,
+    "cfg": 5.5,
+    "sampler_name": "dpmpp_2m",
+    "scheduler": "karras",
+    "checkpoint": "",
+    "size": "auto",
+    "pose": "off"
+  },
+  "loras": {
+    "mode": "auto",
+    "dirs": [],
+    "comfy_root": "",
+    "max_loras": 3,
+    "sweep": true,
+    "max_candidates": 14,
+    "civitai_max_nsfw_level": 16,
+    "pick_visual_candidates": 5,
+    "catalog_dir": "",
+    "max_detailed_candidates": 20
+  },
+  "checkpoints_dir": "",
+  "checkpoint_bases": {},
+  "comfyui": {
+    "autostart": true,
+    "stop_on_exit": true,
+    "start_timeout": 300,
+    "python": "",
+    "main": "",
+    "args": null,
+    "extra_args": []
+  },
+  "controlnet": {
+    "model": "xinsir_union_sdxl_promax.safetensors",
+    "pose_strength": 0.6,
+    "pose_end": 0.8,
+    "pose_hands": true,
+    "pose_face": false
+  },
+  "hands": {
+    "denoise": 0.6,
+    "control_strength": 0.8,
+    "control_end": 1.0,
+    "pad": 0.3,
+    "min_confidence": 3.5,
+    "min_points": 12
+  },
+  "ipadapter": {
+    "enabled": true,
+    "preset": "PLUS (high strength)",
+    "weight": 0.6,
+    "weight_type": "linear",
+    "end": 1.0
+  }
+}

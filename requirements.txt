@@ -1,0 +1,13 @@
+requests>=2.31
+pillow>=10
+numpy>=1.24
+# only for judge.backend = "openai"
+openai>=2.0
+# optional local pre-filter (use your ComfyUI torch install or pip install torch transformers)
+# torch
+# transformers
+psutil
+# pose ControlNet and hand refiner (DWPose)
+rtmlib
+onnxruntime
+opencv-python

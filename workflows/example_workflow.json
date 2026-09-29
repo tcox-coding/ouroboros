@@ -1,0 +1,450 @@
+{
+  "1": {
+    "inputs": {
+      "stop_at_clip_layer": -2,
+      "clip": [
+        "23:5",
+        1
+      ]
+    },
+    "class_type": "CLIPSetLastLayer",
+    "_meta": {
+      "title": "CLIP Set Last Layer"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": "score_4, score_5, score_6,\nlowres, bad anatomy, bad hands, extra fingers, text, watermark, signature",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative Prompt"
+    }
+  },
+  "8": {
+    "inputs": {
+      "text": "score_9, score_8_up, score_7_up, source_anime,\n1girl, solo, standing, looking at viewer, simple background",
+      "clip": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive Prompt"
+    }
+  },
+  "10": {
+    "inputs": {
+      "seed": 0,
+      "steps": 30,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1,
+      "model": [
+        "23:5",
+        0
+      ],
+      "positive": [
+        "8",
+        0
+      ],
+      "negative": [
+        "6",
+        0
+      ],
+      "latent_image": [
+        "29:50",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "12": {
+    "inputs": {
+      "image": "reference.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference Image"
+    }
+  },
+  "16": {
+    "inputs": {
+      "tile_size": 384,
+      "overlap": 64,
+      "temporal_size": 64,
+      "temporal_overlap": 8,
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "23:13",
+        2
+      ]
+    },
+    "class_type": "VAEDecodeTiled",
+    "_meta": {
+      "title": "VAE Decode (Tiled)"
+    }
+  },
+  "21": {
+    "inputs": {
+      "images": [
+        "53",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "24": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Use Reference Image?"
+    }
+  },
+  "26": {
+    "inputs": {
+      "value": 1
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Batch Size"
+    }
+  },
+  "27": {
+    "inputs": {
+      "value": 832
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "28": {
+    "inputs": {
+      "value": 1216
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "51": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Masked?"
+    }
+  },
+  "52": {
+    "inputs": {
+      "stitcher": [
+        "29:44",
+        0
+      ],
+      "inpainted_image": [
+        "16",
+        0
+      ]
+    },
+    "class_type": "InpaintStitchImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Stitch"
+    }
+  },
+  "53": {
+    "inputs": {
+      "image_a": [
+        "52",
+        0
+      ],
+      "image_b": [
+        "16",
+        0
+      ],
+      "boolean": [
+        "51",
+        0
+      ]
+    },
+    "class_type": "Image Input Switch",
+    "_meta": {
+      "title": "Image Input Switch"
+    }
+  },
+  "60": {
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "23:5": {
+    "inputs": {
+      "model": [
+        "23:13",
+        0
+      ],
+      "clip": [
+        "23:13",
+        1
+      ],
+      "PowerLoraLoaderHeaderWidget": {
+        "type": "PowerLoraLoaderHeaderWidget"
+      },
+      "➕ Add Lora": ""
+    },
+    "class_type": "Power Lora Loader (rgthree)",
+    "_meta": {
+      "title": "Power Lora Loader (rgthree)"
+    }
+  },
+  "23:13": {
+    "inputs": {
+      "ckpt_name": "ponyDiffusionV6XL_v6StartWithThisOne.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "29:4": {
+    "inputs": {
+      "width": [
+        "27",
+        0
+      ],
+      "height": [
+        "28",
+        0
+      ],
+      "batch_size": [
+        "26",
+        0
+      ]
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    }
+  },
+  "29:22": {
+    "inputs": {
+      "pixels": [
+        "12",
+        0
+      ],
+      "vae": [
+        "23:13",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "29:7": {
+    "inputs": {
+      "amount": [
+        "26",
+        0
+      ],
+      "samples": [
+        "29:22",
+        0
+      ]
+    },
+    "class_type": "RepeatLatentBatch",
+    "_meta": {
+      "title": "Repeat Latent Batch"
+    }
+  },
+  "29:25": {
+    "inputs": {
+      "latent_a": [
+        "29:7",
+        0
+      ],
+      "latent_b": [
+        "29:4",
+        0
+      ],
+      "boolean": [
+        "24",
+        0
+      ]
+    },
+    "class_type": "Latent Input Switch",
+    "_meta": {
+      "title": "Reference / Empty Switch"
+    }
+  },
+  "29:50": {
+    "inputs": {
+      "latent_a": [
+        "29:46",
+        0
+      ],
+      "latent_b": [
+        "29:25",
+        0
+      ],
+      "boolean": [
+        "51",
+        0
+      ]
+    },
+    "class_type": "Latent Input Switch",
+    "_meta": {
+      "title": "Masked?"
+    }
+  },
+  "29:46": {
+    "inputs": {
+      "amount": [
+        "26",
+        0
+      ],
+      "samples": [
+        "29:59",
+        0
+      ]
+    },
+    "class_type": "RepeatLatentBatch",
+    "_meta": {
+      "title": "Repeat Latent Batch"
+    }
+  },
+  "29:55": {
+    "inputs": {
+      "mask": [
+        "29:44",
+        2
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image"
+    }
+  },
+  "29:56": {
+    "inputs": {
+      "images": [
+        "29:55",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "29:58": {
+    "inputs": {
+      "pixels": [
+        "29:44",
+        1
+      ],
+      "vae": [
+        "23:13",
+        2
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "29:59": {
+    "inputs": {
+      "samples": [
+        "29:58",
+        0
+      ],
+      "mask": [
+        "29:44",
+        2
+      ]
+    },
+    "class_type": "SetLatentNoiseMask",
+    "_meta": {
+      "title": "Set Latent Noise Mask"
+    }
+  },
+  "29:61": {
+    "inputs": {
+      "images": [
+        "29:44",
+        1
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "29:44": {
+    "inputs": {
+      "downscale_algorithm": "bilinear",
+      "upscale_algorithm": "bicubic",
+      "preresize": false,
+      "preresize_mode": "ensure minimum resolution",
+      "preresize_min_width": 1024,
+      "preresize_min_height": 1024,
+      "preresize_max_width": 16384,
+      "preresize_max_height": 16384,
+      "mask_fill_holes": true,
+      "mask_expand_pixels": 0,
+      "mask_invert": false,
+      "mask_blend_pixels": 8,
+      "mask_hipass_filter": 0.1,
+      "extend_for_outpainting": false,
+      "extend_up_factor": 1,
+      "extend_down_factor": 1,
+      "extend_left_factor": 1,
+      "extend_right_factor": 1,
+      "context_from_mask_extend_factor": 3,
+      "output_resize_to_target_size": true,
+      "output_target_width": 1024,
+      "output_target_height": 1024,
+      "output_padding": "32",
+      "device_mode": "cpu (compatible)",
+      "image": [
+        "12",
+        0
+      ],
+      "mask": [
+        "12",
+        1
+      ]
+    },
+    "class_type": "InpaintCropImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Crop"
+    }
+  }
+}

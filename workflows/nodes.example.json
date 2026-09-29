@@ -1,0 +1,69 @@
+{
+  "_comment": "Maps the workflow's node ids to the roles Ouroboros sets. Used as-is with example_workflow.json; for your own workflow, export it with Workflow -> Export (API) into workflows/, copy this file to nodes.json and change 'file' and the node ids. Roles: positive, negative, seed, steps, cfg, sampler_name, scheduler, denoise, image (LoadImage; inpaint masks come from its alpha channel), use_reference and masked (boolean switch nodes), batch_size, checkpoint (CheckpointLoader ckpt_name), width and height (output size). lora_loader: a Power Lora Loader (rgthree) node whose LoRAs Ouroboros sets. remove_nodes drops nodes such as a Save node, so candidates don't land in your output folder.",
+  "file": "example_workflow.json",
+  "output": "21",
+  "remove_nodes": [],
+  "roles": {
+    "positive": [
+      "8",
+      "text"
+    ],
+    "negative": [
+      "6",
+      "text"
+    ],
+    "seed": [
+      "10",
+      "seed"
+    ],
+    "steps": [
+      "10",
+      "steps"
+    ],
+    "cfg": [
+      "10",
+      "cfg"
+    ],
+    "sampler_name": [
+      "10",
+      "sampler_name"
+    ],
+    "scheduler": [
+      "10",
+      "scheduler"
+    ],
+    "denoise": [
+      "10",
+      "denoise"
+    ],
+    "image": [
+      "12",
+      "image"
+    ],
+    "use_reference": [
+      "24",
+      "value"
+    ],
+    "masked": [
+      "51",
+      "value"
+    ],
+    "batch_size": [
+      "26",
+      "value"
+    ],
+    "checkpoint": [
+      "23:13",
+      "ckpt_name"
+    ],
+    "width": [
+      "27",
+      "value"
+    ],
+    "height": [
+      "28",
+      "value"
+    ]
+  },
+  "lora_loader": "23:5"
+}
