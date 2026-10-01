@@ -83,7 +83,6 @@
     "max_rounds": 10,
     "max_cost_usd": 0.5,
     "plateau_rounds": 3,
-    "candidates_per_round": 4,
     "send_top_k": 3,
     "local_prefilter": true,
     "min_reference_denoise": 0.7,
@@ -98,7 +97,11 @@
     },
     "prompt_token_budget": 8000,
     "hand_refine": false,
-    "controlled_seed": true
+    "controlled_seed": true,
+    "auto_fix": false,
+    "batch_start": 12,
+    "batch_end": 3,
+    "lora_switch_rounds": 3
   },
   "queue": {
     "parallel_jobs": 2,
@@ -158,5 +161,14 @@
     "weight": 0.6,
     "weight_type": "linear",
     "end": 1.0
+  },
+  "autofix": {
+    "max_rounds": 2,
+    "fixes_per_round": 2,
+    "min_severity": 2,
+    "denoise": 0.6,
+    "img2img_denoise": 0.4,
+    "image_max_side": 1024,
+    "keep_margin": 2
   }
 }

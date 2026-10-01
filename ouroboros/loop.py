@@ -17,14 +17,15 @@ from typing import Callable
 
 from . import masks, scoring
 from . import pose as posemod
+from . import autofix as autofix_mod
 from .handfix import refine_hands
-from .comfy import ComfyClient
+from .comfy import Cancelled, ComfyClient
 from .jobs import Job
 from .judge import Judge
 from .lora_picker import pick_loras, prompt_notes
 from .loras import LoraLibrary, checkpoint_base, compatible, with_triggers
-from .params import (MODES, GenParams, allowed_modes, apply_edit, enforce_reference_rules, lora_stem,
-                     norm_tag, reseed_duplicates, split_tags, variants)
+from .params import (DEFAULT_DENOISE, MODES, GenParams, allowed_modes, apply_edit, enforce_reference_rules,
+                     lora_stem, norm_tag, reseed_duplicates, split_tags, variants)
 from .prompter import write_prompt
 from .sizes import check_size, fit_to, output_size
 from .workflow import Workflows
@@ -131,16 +132,22 @@ def gate_fine_tuning(edit: dict, criteria: dict, lc: dict, modes: list[str], log
 def lora_sweep(p: GenParams, alternatives: list[tuple[str, float]], managed: set[str], n: int,
                max_loras: int, baseline: tuple = ()) -> list[GenParams]:
     """Round 1 when LoRAs were picked: the picked set, the workflow's own set (the
-    baseline the picks have to beat), then sets with one alternative swapped in, all on
-    the same seed so the judge compares the LoRAs, not the seeds."""
+    baseline the picks have to beat), no LoRAs at all (a pick has to earn its place),
+    then sets with one alternative swapped in, all on the same seed so the judge compares
+    the LoRAs, not the seeds. Round 1's batch is the largest, so this is where the most
+    LoRA options are tried."""
     out = [p]
     if baseline and tuple(baseline) != tuple(p.loras):
         out.append(replace(p, loras=tuple(baseline)))
     picked = [(name, w) for name, w in p.loras if name in managed]
     pinned = [(name, w) for name, w in p.loras if name not in managed]
+    if picked and len(out) < n:
+        out.append(replace(p, loras=tuple(pinned)))
     for alt in alternatives:
         if len(out) >= n:
             break
+        if alt[0] in {m for m, _ in picked}:
+            continue
         if picked:
             weakest = min(range(len(picked)), key=lambda i: picked[i][1])
             new = picked[:weakest] + picked[weakest + 1:] + [alt]
@@ -150,6 +157,156 @@ def lora_sweep(p: GenParams, alternatives: list[tuple[str, float]], managed: set
     while len(out) < n:
         out.append(replace(p, seed=random.randrange(2**32)))
     return out
+
+
+# ---- how many candidates a round renders -------------------------------------------------
+MAX_BATCH = 16
+FOCUSES = ("prompt", "lora_weights", "loras", "settings")
+
+
+def batch_for_round(rnd: int, phase: str, best: float | None, first: float | None, threshold: float,
+                    lc: dict, fixed: int | None = None) -> int:
+    """Wide early, narrow late. Round 1 renders loop.batch_start candidates (up to 16),
+    while nothing is known and the LoRAs and prompt are still being chosen; the batch
+    then shrinks toward loop.batch_end (2-4) as the job gets tuned. "Tuned" is whichever
+    is furthest along: rounds done (30% fewer each round), the phase (refine is most of
+    the way, repair all of it), or the score's progress from round 1 to the threshold.
+    A job that sets candidates_per_round itself keeps that fixed size."""
+    if fixed:
+        return max(1, min(MAX_BATCH, int(fixed)))
+    start = max(2, min(MAX_BATCH, int(lc.get("batch_start") or 12)))  # empty/0 in Settings = the default
+    end = max(1, min(start, int(lc.get("batch_end") or 3)))
+    progress = 1 - 0.7 ** (rnd - 1)
+    progress = max(progress, {"explore": 0.0, "refine": 0.6, "repair": 1.0}.get(phase, 0.0))
+    if best is not None and first is not None and threshold > first:
+        progress = max(progress, min(1.0, max(0.0, (best - first) / (threshold - first))))
+    return max(end, min(start, round(start - (start - end) * progress)))
+
+
+# ---- one axis per edit: the prompt or the LoRAs, not both ----------------------------------
+
+def enforce_focus(edit: dict, current: dict[str, float], allowed: dict[str, str], switch_ok: bool) -> dict:
+    """Make an edit change one axis, so the next round shows what that change did.
+
+    focus "prompt": prompt/negative tags (with settings or a masked repaint); LoRAs stay.
+    focus "lora_weights": only the strengths of the LoRAs in use; the prompt stays.
+    focus "loras": a different set of LoRAs (a swap, an addition, or none); prompt stays.
+    focus "settings": mode, cfg, denoise, sampler, mask; neither prompt nor LoRAs.
+    current: stem -> strength of the managed LoRAs in use. switch_ok: whether the set
+    may still change (only early in a job); otherwise a switch becomes a weight change."""
+    e = dict(edit)
+    loras = e.get("loras")
+    prompt_keys = ("prompt_add", "prompt_remove", "negative_add", "negative_remove")
+    has_prompt = any(e.get(k) for k in prompt_keys)
+    focus = e.get("focus") if e.get("focus") in FOCUSES else None
+    if focus is None:  # infer it from what the edit touches
+        if loras is not None and {str(l.get("lora")) for l in loras} != set(current):
+            focus = "loras"
+        elif loras is not None:
+            focus = "lora_weights"
+        else:
+            focus = "prompt" if has_prompt else "settings"
+    if focus == "loras" and not switch_ok:
+        focus = "lora_weights"
+    if focus == "lora_weights" and not current:
+        focus = "prompt" if has_prompt else "settings"
+    if focus in ("prompt", "settings"):
+        e["loras"] = None
+    if focus == "settings":
+        for k in prompt_keys:
+            e[k] = []
+    if focus in ("lora_weights", "loras"):
+        for k in prompt_keys:
+            e[k] = []
+    if focus == "lora_weights":
+        # The same LoRAs, only new strengths: any LoRA the edit didn't mention keeps its own.
+        asked = {str(l.get("lora")): l.get("strength") for l in loras or [] if str(l.get("lora")) in current}
+        e["loras"] = [{"lora": stem, "strength": asked.get(stem, w) if asked.get(stem) is not None else w}
+                      for stem, w in current.items()]
+    if focus == "loras" and loras is not None:
+        e["loras"] = [l for l in loras if str(l.get("lora")) in allowed]
+    e["focus"] = focus
+    return e
+
+
+def weight_variants(p: GenParams, n: int, managed: set[str], ranges: dict[str, tuple[float, float]]) -> list[GenParams]:
+    """A round that tunes LoRA strengths: the proposed strengths plus a sweep around
+    them, one LoRA at a time, all on the same seed so only the strength differs."""
+    out = [p]
+    steps = (-0.15, 0.15, -0.3, 0.3, -0.45, 0.45)
+    for d in steps:
+        for i, (name, w) in enumerate(p.loras):
+            if len(out) >= n:
+                return out
+            if name not in managed:
+                continue
+            lo, hi = ranges.get(name, (0.1, 1.5))
+            nw = round(min(hi, max(lo, w + d)), 2)
+            loras = tuple((m, nw if j == i else x) for j, (m, x) in enumerate(p.loras))
+            v = replace(p, loras=loras)
+            if v not in out:
+                out.append(v)
+    while len(out) < n:
+        out.append(replace(p, seed=random.randrange(2**32)))
+    return out
+
+
+def set_variants(p: GenParams, previous: GenParams, n: int, managed: set[str], options: list[tuple[str, float]],
+                 max_loras: int) -> list[GenParams]:
+    """A round that switches LoRAs: the proposed set, the set it replaces, no LoRAs at
+    all, then the proposed set with its weakest LoRA swapped for each other option -
+    all on the same seed, so the judge compares LoRAs, not seeds."""
+    pinned = tuple((m, w) for m, w in p.loras if m not in managed)
+    chosen = [(m, w) for m, w in p.loras if m in managed]
+    out = [p]
+
+    def add(loras):
+        v = replace(p, loras=tuple(pinned) + tuple(loras[:max_loras]))
+        if v not in out and len(out) < n:
+            out.append(v)
+    add([(m, w) for m, w in previous.loras if m in managed])
+    add([])
+    for alt in options:
+        if alt[0] in {m for m, _ in chosen}:
+            continue
+        if chosen:
+            weakest = min(range(len(chosen)), key=lambda i: chosen[i][1])
+            add(chosen[:weakest] + chosen[weakest + 1:] + [alt])
+        else:
+            add([alt])
+    while len(out) < n:
+        out.append(replace(p, seed=random.randrange(2**32)))
+    return out
+
+
+def resolve_loras(loras: tuple, index: dict, installed: list[str] | None, log) -> tuple:
+    """The workflow's saved LoRAs, pointed at where they are now. A workflow saved
+    before the library was reorganised (or on another machine) names LoRAs by an old
+    path, e.g. Pony\\styles\\X.safetensors for what is now Pony/styles/artists/x/X.safetensors;
+    ComfyUI skips a LoRA it can't find without a word. Matched by file name: the
+    library's entry first (so the LoRA can be compared, re-weighted or dropped like any
+    other), else ComfyUI's own path; one that isn't installed at all is left out."""
+    norm = lambda n: n.replace("\\", "/").lower()
+    by_stem: dict[str, str] = {}
+    for n in index:
+        by_stem.setdefault(lora_stem(n).lower(), n)
+    have = {norm(n): n for n in installed or []}
+    for n in installed or []:
+        by_stem.setdefault(lora_stem(n).lower(), n)
+    out, seen = [], set()
+    for name, w in loras:
+        found = name if name in index or (installed is not None and norm(name) in have) else by_stem.get(lora_stem(name).lower())
+        if found is None and installed is None:
+            found = name  # can't check: keep it as saved
+        if found is None:
+            log(f"workflow LoRA {lora_stem(name)} isn't installed; leaving it out")
+            continue
+        if found != name:
+            log(f"workflow LoRA {lora_stem(name)} found at {found.replace(chr(92), '/')}")
+        if norm(found) not in seen:
+            seen.add(norm(found))
+            out.append((found, w))
+    return tuple(out)
 
 
 def initial_params(job: Job, defaults: dict) -> GenParams:
@@ -205,7 +362,11 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     lora_mode = lc.get("lora_mode") or lcfg.get("mode", "workflow")
     max_loras = int(lcfg.get("max_loras", 3))
     index = library.index() if library else {}
-    workflow_loras = flows.default_loras()
+    try:
+        installed = comfy.choices("LoraLoader", "lora_name")
+    except Exception:
+        installed = None
+    workflow_loras = resolve_loras(flows.default_loras(), index, installed, log)
     start_loras: tuple = () if lora_mode == "off" else workflow_loras
     alternatives: list[tuple[str, float]] = []
     lora_pick: dict | None = None
@@ -226,13 +387,27 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         log("LoRA mode is auto but the LoRA index is empty (Settings -> LoRAs -> Refresh); using the workflow's")
     active_managed = [n for n, _ in start_loras if n in index]
     # The judge may switch between the picked LoRAs, the alternatives and the workflow's.
+    shortlisted = [n for n in (lora_pick or {}).get("shortlist", []) if n in index]
     lora_choices = {lora_stem(n): n for n in
-                    dict.fromkeys(active_managed + [n for n, _ in alternatives]
+                    dict.fromkeys(active_managed + [n for n, _ in alternatives] + shortlisted
                                   + [n for n, _ in workflow_loras if n in index])} if lora_mode != "off" else {}
+    managed_set = set(lora_choices.values())
+
+    def usual_weight(name: str) -> float:
+        w = (index.get(name) or {}).get("weight_range") or {}
+        return float(w.get("default") or index.get(name, {}).get("typical_weight") or 0.8)
+
+    def weight_range(name: str) -> tuple[float, float]:
+        w = (index.get(name) or {}).get("weight_range") or {}
+        return float(w.get("min", 0.1)), float(w.get("max", 1.5))
+    # Round 1 tries the shortlisted LoRAs that weren't picked too, at their usual weight.
+    alternatives = alternatives + [(n, usual_weight(n)) for n in shortlisted
+                                   if n not in {a for a, _ in alternatives} | set(active_managed)]
+    switch_rounds = int(lc.get("lora_switch_rounds") or 3)
     lora_menu = None
     if lora_choices:
         lora_menu = {"menu": "\n".join("- " + library.card(index[n], detail=False) for n in lora_choices.values()),
-                     "stems": list(lora_choices), "max": max_loras}
+                     "stems": list(lora_choices), "max": max_loras, "switch": True}
     # 0a'. Pose ControlNet (optional). "reference": every render follows the reference's
     # pose. A pose library name: the character comes from the reference and the pose from
     # that pose image; nothing may start from the reference then (img2img would bring its
@@ -378,6 +553,10 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     best_score, best_round = -1.0, 0
     use_local = lc.get("local_prefilter", True) and scoring.available()
     status, rnd = "review", 0
+    first_score: float | None = None
+    focus: str | None = None              # what the last edit changed (see enforce_focus)
+    before_edit: GenParams | None = None  # the parameters that edit was applied to
+    fixed_batch = job.overrides.get("candidates_per_round")
 
     def mean(path: Path) -> float:
         return round(sum(scored[path]) / len(scored[path]), 1)
@@ -409,7 +588,9 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                                lc.get("mask_threshold", 0.35), lc.get("mask_grow_px", 12))
         except masks.EmptyMask as e:
             log(f"{e}; using img2img instead")
+            # At img2img's own strength: an inpaint denoise (0.75) would redraw most of the image.
             p.mode = p.mode.replace("inpaint", "img2img")
+            p.denoise, p.mask_target = min(p.denoise, DEFAULT_DENOISE[p.mode]), None
             return uploaded[source]
         source_used[rnd]["mask"] = out.name
         return upload(out)
@@ -425,12 +606,21 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
 
         # 1. Render a batch locally. Queue all first so ComfyUI never idles between them.
         image_name = source_image(params, rnd)  # may fall back from inpaint to img2img
+        n = batch_for_round(rnd, phase, best_score if rnd > 1 else None, first_score, threshold, lc, fixed_batch)
+        if lora_menu:
+            lora_menu["switch"] = phase == "explore" and rnd < switch_rounds
         if rnd == 1 and lora_pick and (alternatives or workflow_loras) and lcfg.get("sweep", True):
-            found = lora_sweep(params, alternatives, set(index), lc["candidates_per_round"], max_loras,
-                               workflow_loras)
-            log("round 1 compares LoRA sets on one seed")
+            found = lora_sweep(params, alternatives, set(index), n, max_loras, workflow_loras)
+            log(f"round 1 compares LoRA sets on one seed ({n} candidates)")
+        elif focus == "lora_weights" and any(m in managed_set for m, _ in params.loras):
+            found = weight_variants(params, n, managed_set, {m: weight_range(m) for m, _ in params.loras})
+            log(f"round {rnd} tries LoRA strengths around the proposed ones ({n} candidates, one seed)")
+        elif focus == "loras" and before_edit is not None:
+            options = [(m, usual_weight(m)) for m in lora_choices.values()]
+            found = set_variants(params, before_edit, n, managed_set, options, max_loras)
+            log(f"round {rnd} compares LoRA sets ({n} candidates, one seed)")
         else:
-            found = variants(params, lc["candidates_per_round"], phase)
+            found = variants(params, n, phase)
         batch = reseed_duplicates([enforce_reference_rules(p, lc) for p in found], rendered)
         report({"type": "stage", "round": rnd, "phase": phase, "stage": f"rendering {len(batch)} candidates"})
         # One prompt per candidate (batch size 1) so every candidate is reproducible
@@ -452,7 +642,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
 
         # 2. Free local pre-filter: only the top-k go to the judge.
         order = list(range(len(batch)))
-        sweep = rnd == 1 and any(p.loras != batch[0].loras for p in batch)
+        sweep = any(p.loras != batch[0].loras for p in batch)
         if use_local and len(batch) > lc["send_top_k"] and not sweep:  # a LoRA sweep is judged in full
             report({"type": "stage", "round": rnd, "phase": phase, "stage": "local pre-filter"})
             try:
@@ -479,6 +669,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
             scored[paths[i]] = [review.scores[pos]]
             criteria_by[paths[i]] = criteria_of(review.raw, pos)
         update_best(rnd)
+        if first_score is None:
+            first_score = round_score
         if library and index:  # local test results, used when picking LoRAs for later jobs
             library.record_results([(tuple((n, w) for n, w in batch[i].loras if n in index),
                                      criteria_of(review.raw, pos), review.scores[pos])
@@ -581,6 +773,16 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         best_criteria = criteria_by.get(best_image, {})
         edit = gate_fine_tuning(edit, best_criteria, lc, modes, log,
                                 stalled=best_round < rnd and params.mode == "txt2img")
+        # One axis per edit: the prompt or the LoRAs. LoRA sets may still change only in
+        # the first rounds (loop.lora_switch_rounds), while the job is exploring.
+        current_loras = {lora_stem(m): w for m, w in params_of[base].loras if m in managed_set}
+        edit = enforce_focus(edit, current_loras, lora_choices,
+                             bool(lora_choices) and phase == "explore" and rnd + 1 <= switch_rounds)
+        focus = edit["focus"]
+        before_edit = params_of[base]
+        log(f"next edit changes the {focus.replace('_', ' ')}"
+            + (": " + ", ".join(f"{l['lora']} {l['strength']:g}" for l in edit["loras"]) if edit.get("loras") is not None
+               and focus.startswith("lora") else ""))
         phase = edit.get("phase", phase)
         params = enforce_reference_rules(apply_edit(params_of[base], edit, samplers, schedulers,
                                                     lora_choices, max_loras), lc)
@@ -616,20 +818,61 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         except Exception as e:  # an optional finishing pass must never cost the job its result
             log(f"warning: hand refine failed ({str(e)[:200]})")
 
+    fix_info = None
+    if best_image and lc.get("auto_fix") and status != "stopped":
+        # Look for flaws (hands, anatomy, proportions...) in the final image and repair
+        # them. The likeness to the reference must survive: a fix is kept only if a fresh
+        # look scores it no more than autofix.keep_margin below the image it started from.
+        src = out_dir / hands_info["image"] if hands_info and hands_info["kept"] else best_image
+        bp0 = params_of[best_image]
+        report({"type": "stage", "round": rnd, "phase": "repair", "stage": "auto-fixing the result"})
+        try:
+            res = autofix_mod.autofix(
+                src, bp0, backend=judge.backend, comfy=comfy, flows=flows, cfg=cfg, checkpoint=checkpoint,
+                positive=rendered_positive(bp0), out_dir=out_dir / "autofix", upload=upload, log=log, tag="best",
+                stage=lambda t: report({"type": "stage", "round": rnd, "phase": "repair", "stage": "auto-fix: " + t}),
+                should_stop=should_stop)
+            cost += res["cost_usd"]
+            fix_info = {"before": src.name, "image": None, "kept": False, "issues_found": res["issues_found"],
+                        "issues_left": res["issues_left"], "rounds": res["rounds"]}
+            if res["image"]:
+                before = judge.confirm(job.reference, goal, bp0.short(), src, modes, rules, rubric,
+                                       lora_menu, pose_judge)
+                after = judge.confirm(job.reference, goal, bp0.short(), res["image"], modes, rules, rubric,
+                                      lora_menu, pose_judge)
+                cost += before.cost_usd + after.cost_usd
+                margin = float(autofix_mod.settings(cfg).get("keep_margin", 2))
+                kept = after.scores[0] >= before.scores[0] - margin
+                fix_info.update(image=str(Path(res["image"]).relative_to(out_dir)), kept=kept,
+                                score_before=before.scores[0], score_after=after.scores[0])
+                log(f"auto-fix: likeness {before.scores[0]:g} before, {after.scores[0]:g} after; "
+                    + ("keeping the fixed image" if kept else "keeping the original"))
+            else:
+                log("auto-fix: nothing needed fixing" if not res["issues_found"] else "auto-fix: no fix was kept")
+            record({"type": "autofix", **fix_info})
+        except Cancelled:
+            log("auto-fix stopped")
+        except Exception as e:  # an optional finishing pass must never cost the job its result
+            log(f"warning: auto-fix failed ({str(e)[:200]})")
+
     best = None
     if best_image:
         shutil.copy2(best_image, out_dir / "best.png")
         if hands_info and hands_info["kept"]:
             shutil.copy2(best_image, out_dir / "best_before_hands.png")
             shutil.copy2(out_dir / hands_info["image"], out_dir / "best.png")
+        if fix_info and fix_info["kept"]:
+            shutil.copy2(out_dir / "best.png", out_dir / "best_before_autofix.png")
+            shutil.copy2(out_dir / fix_info["image"], out_dir / "best.png")
         bp = params_of[best_image]
-        brnd = int(best_image.stem[1:3])
+        brnd = int(best_image.stem[1:].split("_")[0])  # r07_c2 -> 7 (r107_c2 past round 99)
         best = {"image": best_image.name, "round": brnd, "params": bp.to_dict(),
                 "rendered_positive": rendered_positive(bp), "checkpoint": ckpt_name, "size": list(size),
                 "loras": [{"name": n, "strength": w, "title": index.get(n, {}).get("title"),
                            "trigger_words": index.get(n, {}).get("trigger_words", [])} for n, w in bp.loras],
                 "source": source_used.get(brnd), "graph": f"graphs/{best_image.stem}.json",
-                "confirmed": status == "done" and confirm, "hands": hands_info, "pose": run_info.get("pose")}
+                "confirmed": status == "done" and confirm, "hands": hands_info, "autofix": fix_info,
+                "pose": run_info.get("pose")}
     (out_dir / "summary.json").write_text(json.dumps({
         "job": job.name, "status": status, "best_score": best_score, "milestones": milestones,
         "best_image": best_image.name if best_image else None, "rounds": rnd, "cost_usd": round(cost, 4),

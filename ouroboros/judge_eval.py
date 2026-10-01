@@ -24,7 +24,6 @@ import json
 import statistics
 import sys
 import time
-from pathlib import Path
 
 from .judge import Judge
 from .runner import ROOT, load_config

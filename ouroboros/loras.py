@@ -16,6 +16,7 @@ it (Settings -> LoRAs -> Refresh).
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 import html
 import json
 import re
@@ -24,6 +25,8 @@ import struct
 import threading
 import time
 from pathlib import Path
+
+from .params import lora_stem
 
 import requests
 
@@ -191,7 +194,6 @@ class LoraLibrary:
         except ValueError:
             dirs, freq = {}, {}
         tokens = [re.sub(r"^\d+_", "", d).strip() for d in dirs]
-        total_imgs = sum(int(v.get("img_count", 0)) for v in dirs.values()) or None
         counts: dict[str, int] = {}
         for tags in freq.values():
             for t, c in tags.items():
@@ -262,7 +264,7 @@ class LoraLibrary:
         rec["description"] = _strip_html((version.get("description") or "") + " "
                                          + ((model or {}).get("description") or ""), 400)
         allowed = self.cfg.get("civitai_max_nsfw_level", 32)
-        stems = {rec["title"].lower(), Path(rec["name"]).stem.lower()}
+        stems = {rec["title"].lower(), lora_stem(rec["name"]).lower()}
         examples, weights = [], []
         for img in version.get("images") or []:
             if img.get("type", "image") != "image":
@@ -298,7 +300,7 @@ class LoraLibrary:
         return None
 
     def _download_thumbs(self, rec: dict) -> None:
-        folder = self.thumbs / re.sub(r"[^\w.-]+", "_", Path(rec["name"]).stem)
+        folder = self.thumbs / re.sub(r"[^\w.-]+", "_", lora_stem(rec["name"]))
         for i, ex in enumerate(rec["examples"][:4]):
             out = folder / f"{i}.jpg"
             if out.exists():
@@ -339,7 +341,11 @@ class LoraLibrary:
             self.stats_file.write_text(json.dumps(stats, indent=1), encoding="utf-8")
 
     def stats_line(self, name: str) -> str:
-        s = self.stats().get(name)
+        stats = self.stats()
+        s = stats.get(name)
+        if s is None:  # recorded under the path the LoRA had before the library was re-sorted
+            stem = lora_stem(name).lower()
+            s = next((v for k, v in stats.items() if lora_stem(k).lower() == stem), None)
         if not s or not s["n"]:
             return "not tested here yet"
         st = sorted(s["strengths"])
@@ -349,7 +355,9 @@ class LoraLibrary:
 
     # --- helpers for prompts -------------------------------------------------------
     def card(self, rec: dict, detail: bool = True) -> str:
-        parts = [f"{Path(rec['name']).stem}: {rec['title']}"]
+        if rec.get("brief"):  # the condensed description (lora_briefs.py) says it all
+            return f"{lora_stem(rec['name'])}: {rec['title']} {rec['brief']} | {self.stats_line(rec['name'])}"
+        parts = [f"{lora_stem(rec['name'])}: {rec['title']}"]
         if rec.get("base_model"):
             parts.append(f"base {rec['base_model']}")
         parts.append("triggers: " + (", ".join(rec["trigger_words"][:6]) or "none"))
@@ -367,6 +375,17 @@ class LoraLibrary:
         return list(rec["trigger_words"]) if rec else []
 
 
+def made_up_token(word: str) -> bool:
+    """A word no tagger would write, so it can only be a LoRA's own: a letter followed by
+    a digit ("p0seA", "RSV1.2"), an underscore ("Jabstyle_PNYV1.5") or camelCase
+    ("PuffyNips"). Not a leading count ("4girls", "1980s (style)", "69"), a capital
+    letter ("Kiss", "Flat chest") or Pony's quality tags ("score_9", "source_anime"):
+    those are ordinary tags that LoRAs also list."""
+    if re.match(r"\W*(score_\d|source_|rating_)", word, re.I):
+        return False
+    return bool(re.search(r"[A-Za-z][0-9]|_|[a-z][A-Z]", word))
+
+
 def with_triggers(positive: str, active: tuple, library: LoraLibrary | None, split_tags, norm_tag,
                   protected: set[str] | None = None) -> str:
     """The positive prompt as rendered:
@@ -374,9 +393,13 @@ def with_triggers(positive: str, active: tuple, library: LoraLibrary | None, spl
       (only the main one: some LoRAs list many, e.g. every character they know);
     - trigger words of managed LoRAs that are off are removed, since they mean nothing
       without their LoRA, unless they're in `protected` (the user's own prompt) or
-      shared with an active LoRA;
-    - LoRA file names and titles are removed: they aren't tags (a prompt writer copied
-      "OldAnimeStyle_XL_v3" into a prompt once)."""
+      shared with an active LoRA. Only LoRA-specific tokens count: a trigger word no
+      other LoRA lists that is a made_up_token(). Many LoRAs list ordinary tags as
+      triggers ("1girl", "standing", "full body", "Kiss", "69"); removing those stripped
+      them from every prompt whose LoRAs didn't list them;
+    - LoRA file names that are made-up tokens are removed: they aren't tags (a prompt
+      writer copied "OldAnimeStyle_XL_v3" into a prompt once). Plain-word file names
+      ("Handjob") and titles are ordinary tags too."""
     if not library:
         return positive
     index = library.index()
@@ -384,10 +407,12 @@ def with_triggers(positive: str, active: tuple, library: LoraLibrary | None, spl
     want = [index[n]["trigger_words"][0] for n in active_names if index.get(n, {}).get("trigger_words")]
     keep = {norm_tag(w) for w in want} | {norm_tag(w) for n in active_names
                                           for w in index.get(n, {}).get("trigger_words", [])}
+    listed = Counter(norm_tag(w) for rec in index.values() for w in rec.get("trigger_words", []))
     drop = {norm_tag(w) for n, rec in index.items() if n not in active_names
-            for w in rec.get("trigger_words", [])} - keep - (protected or set())
-    names = {norm_tag(Path(n).stem) for n in index} | {norm_tag(rec.get("title", "")) for rec in index.values()}
-    drop |= {x for x in names if x} - (protected or set())
+            for w in rec.get("trigger_words", [])
+            if listed[norm_tag(w)] == 1 and made_up_token(w)}
+    drop |= {norm_tag(lora_stem(n)) for n in index if made_up_token(lora_stem(n))}
+    drop -= keep | (protected or set())
     # An active trigger written loosely ("1990s (style)") is put back exactly as listed
     # ("1990s \(style\)"): unescaped brackets are weight syntax to ComfyUI.
     exact = {norm_tag(w): w for n in active_names for w in index.get(n, {}).get("trigger_words", [])}

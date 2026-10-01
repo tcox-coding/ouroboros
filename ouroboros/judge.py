@@ -67,9 +67,22 @@ Editing guidance:
 - img2img_reference starts from the reference image (higher denoise = freer; see RULES
   for its limit). img2img_best refines the current best image (denoise ~0.3-0.5); use it
   for global issues like colour or shading, not for local details.
-- LoRAs (when a LORAS section is given): set "loras" to a new full set only when style,
-  line work or colour treatment is the main problem; otherwise null. Change one thing at
-  a time (swap one LoRA or move one strength by about 0.1-0.3).
+- ONE AXIS PER EDIT: set "focus" to what the edit changes, and change only that, so the
+  next round shows what it did:
+  "prompt": prompt/negative tags (optionally with a mode/denoise change or a masked
+  repaint); loras = null. "lora_weights": only the strengths of the LoRAs in use; no
+  prompt edits. "loras": a different set of LoRAs (swap one, add one, or an empty list
+  for none); no prompt edits. "settings": mode, cfg, denoise, sampler, mask only.
+  Use LoRAs for the LOOK (drawing style, line work, shading, colour treatment, rendering)
+  and the prompt for CONTENT (character, outfit, hair, pose, background). If the last edit
+  on one axis didn't help, try the other.
+- LoRAs (when a LORAS section is given): each comes with a brief of what it does, what it
+  suits, what it's weak at, and how its effect builds with strength. Early in a job (the
+  section says whether switching is still open) a wrong look is best fixed by switching:
+  try the LoRA whose brief best matches the reference's style, or drop one that fights
+  it. No LoRA at all is a valid choice when none suits the image. Later, tune strengths
+  (about 0.1-0.3 at a time): lower when its look is overbaked or overrides the
+  character, higher when its look doesn't show.
 - Prefer small, targeted prompt edits. prompt_remove takes exact existing tags from the
   prompt; to get rid of something the image shows but the prompt doesn't ask for, put
   it in negative_add. Don't re-add tags the prompt already has.
@@ -129,7 +142,8 @@ def _nullable(t: str) -> dict:
 
 
 def build_schema(criteria: list[str], samplers: list[str], schedulers: list[str], n_candidates: int,
-                 modes: list[str] | None = None, lora_stems: list[str] | None = None, max_loras: int = 3) -> dict:
+                 modes: list[str] | None = None, lora_stems: list[str] | None = None, max_loras: int = 3,
+                 lora_switch: bool = False) -> dict:
     score_obj = {
         "type": "object",
         "properties": {c: {"type": "integer"} for c in criteria},
@@ -141,6 +155,8 @@ def build_schema(criteria: list[str], samplers: list[str], schedulers: list[str]
         "type": "object",
         "properties": {
             "phase": {"type": "string", "enum": PHASES},
+            "focus": {"type": "string", "enum": ["prompt", "settings"] + (
+                (["lora_weights", "loras"] if lora_switch else ["lora_weights"]) if lora_stems else [])},
             "mode": {"type": "string", "enum": modes or list(MODES)},
             "keep_seed": {"type": "boolean"},
             "prompt_add": str_list,
@@ -285,8 +301,10 @@ class Judge:
         parts: list[dict] = [
             {"text": f"RUBRIC\n{rubric_text}\n\nGOAL (the prompt being refined)\n{job_goal}"
                      + (f"\n\nRULES\n{rules}" if rules else "")
-                     + (f"\n\nLORAS (style add-ons you may switch between; at most {loras['max']} at once)\n"
-                        f"{loras['menu']}" if loras else "")},
+                     + (f"\n\nLORAS (at most {loras['max']} at once; "
+                        + ("switching is OPEN this round: any of these, or none" if loras.get("switch", True)
+                           else "switching is CLOSED: keep the LoRAs in use and tune their strengths, or edit the prompt")
+                        + f")\n{loras['menu']}" if loras else "")},
         ]
         round_text = (f"NOTES ON EARLIER ROUNDS\n{notes or 'none'}"
                       + f"\n\nPARAMETERS THE EDIT APPLIES TO\n{current}"
@@ -319,7 +337,8 @@ class Judge:
                               "against the rubric anchors; pick the best; diagnose; propose ONE edit. JSON only."})
 
         schema = build_schema(list(rubric), self.samplers, self.schedulers, len(candidates), modes,
-                              loras["stems"] if loras else None, loras["max"] if loras else 3)
+                              loras["stems"] if loras else None, loras["max"] if loras else 3,
+                              loras.get("switch", True) if loras else False)
         data, cost, tokens = (backend or self.backend).complete(INSTRUCTIONS, parts, schema, "round_review", side)
 
         scores = [0.0] * len(candidates)
@@ -345,10 +364,24 @@ class Judge:
         current: the base parameters, or one line per candidate. Candidates in a round
         differ (seed, cfg, denoise, LoRA set), and each edit is applied to its own
         candidate's parameters, so each call is told that candidate's."""
+        from .llm_queue import current_label, set_label
         rubric = rubric or self.base_rubric
         currents = current if isinstance(current, list) else [current] * len(candidates)
-        reviews = [self.review(reference, job_goal, cur, notes, [c], modes, rules, rubric, extra_note, loras, pose)
-                   for c, cur in zip(candidates, currents)]
+        label = current_label()  # the job these calls are for, shown in the LLM queue
+
+        def one(args):
+            c, cur = args
+            set_label(label)
+            return self.review(reference, job_goal, cur, notes, [c], modes, rules, rubric, extra_note, loras, pose)
+        # Side by side: a big early round would otherwise wait for each call in turn. The
+        # backend's gate (queue.llm_parallel) still decides how many really run at once.
+        workers = max(1, min(len(candidates), int(getattr(self, "parallel", 1))))
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(workers) as pool:
+                reviews = list(pool.map(one, zip(candidates, currents)))
+        else:
+            reviews = [one(x) for x in zip(candidates, currents)]
         scores = [r.scores[0] for r in reviews]
         diffs = [len((r.raw.get("candidates") or [{}])[0].get("differences") or []) for r in reviews]
         best = max(range(len(candidates)), key=lambda i: (scores[i], -diffs[i]))

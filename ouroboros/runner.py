@@ -244,6 +244,7 @@ class Runner:
             flows = Workflows(ROOT / "workflows")
             judge = Judge(cfg["judge"], samplers, schedulers)
             judge.backend = GatedBackend(judge.backend, self.gate)  # every job's LLM calls take turns
+            judge.parallel = int(cfg.get("queue", {}).get("llm_parallel", 1))  # a round's calls side by side
             if judge.confirm_backend is not None:
                 judge.confirm_backend = GatedBackend(judge.confirm_backend, self.gate)
             library = lora_library(cfg)

@@ -88,7 +88,7 @@ def catalog(root: Path, cache_dir: Path, refresh: bool = False) -> list[dict]:
             saved = json.loads(cache.read_text(encoding="utf-8"))
             if (saved.get("schema") == SCHEMA and saved.get("newest") == newest
                     and saved.get("count") == len(states)):
-                return saved["items"]
+                return _with_briefs(saved["items"], cache_dir, root)
         except (OSError, ValueError, KeyError):
             pass
     items = []
@@ -104,7 +104,47 @@ def catalog(root: Path, cache_dir: Path, refresh: bool = False) -> list[dict]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({"schema": SCHEMA, "newest": newest, "count": len(states),
                                  "built": time.time(), "items": items}, indent=1), encoding="utf-8")
-    return items
+    return _with_briefs(items, cache_dir, root)
+
+
+_files: dict = {"root": None, "at": 0.0, "names": {}}
+
+
+def installed_names(loras_root: Path) -> dict[str, str]:
+    """file name (lower case) -> the name ComfyUI knows it by (its path below the loras
+    root, backslash-separated like the classifier writes it). Rescanned every minute."""
+    if _files["root"] != loras_root or time.time() - _files["at"] > 60:
+        names = {}
+        for f in loras_root.rglob("*.safetensors") if loras_root.is_dir() else []:
+            names.setdefault(f.name.lower(), str(f.relative_to(loras_root)).replace("/", "\\"))
+        _files.update(root=loras_root, at=time.time(), names=names)
+    return _files["names"]
+
+
+def current_name(name: str, loras_root: Path) -> str:
+    """Where a LoRA is now. The classifier moves LoRAs as it re-sorts the library (each
+    now in its own folder), and its records, saved workflows and older runs keep the old
+    path; ComfyUI silently skips a LoRA it can't find. File names are unique, so the
+    file name finds it."""
+    fname = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return installed_names(loras_root).get(fname, name)
+
+
+def _with_briefs(items: list[dict], cache_dir: Path, root: Path | None = None) -> list[dict]:
+    """Each LoRA at its current path, with its short description for LLMs
+    (lora_briefs.py) if one was written. A LoRA whose brief says it's made to depict
+    minors is left out entirely."""
+    from .lora_briefs import load
+    briefs = load(cache_dir)
+    out = []
+    for e in items:
+        b = briefs.get(e["id"])
+        if b and b.get("minors"):
+            continue
+        if root is not None:
+            e = {**e, "comfy_name": current_name(e["comfy_name"], root / "loras")}
+        out.append({**e, "brief": b["text"]} if b and b.get("text") else e)
+    return out
 
 
 def by_name(root: Path, cache_dir: Path) -> dict[str, dict]:
@@ -130,7 +170,7 @@ def records(root: Path, cache_dir: Path) -> dict[str, dict]:
             "typical_weight": (e["weight"] or {}).get("default"),
             "civitai_url": e.get("civitai_url"), "source": "catalog", "error": None,
             "weight_range": e.get("weight"), "type": e.get("type", ""), "category": e.get("category", ""),
-            "scores": e.get("scores") or {}, "id": e["id"],
+            "scores": e.get("scores") or {}, "id": e["id"], "brief": e.get("brief", ""),
         }
     return out
 

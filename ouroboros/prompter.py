@@ -72,9 +72,10 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
                           "DESCRIPTION\n(none: write the prompt from the REFERENCE image alone, describing "
                           "the character, outfit, pose, framing, background and drawing style you see)"}]
     if lora_notes:
-        parts.append({"text": "STYLE LORAS that will be active (put each one's trigger words in the positive "
-                              "prompt exactly as written, and prefer the style wording its example prompt "
-                              "uses; never write LoRA names or <lora:...> tags):\n" + lora_notes})
+        parts.append({"text": "LORAS that will be active (put each one's trigger words in the positive prompt "
+                              "exactly as written; write the prompt so it works with what each LoRA does - "
+                              "its style, character, pose or concept - and prefer the wording its example "
+                              "prompt uses; never write LoRA names or <lora:...> tags):\n" + lora_notes})
     if pose_note:
         parts.append({"text": "POSE for this job (a ControlNet imposes it; it replaces the reference's pose, so "
                               "describe this pose and framing, not the reference's):\n" + pose_note})

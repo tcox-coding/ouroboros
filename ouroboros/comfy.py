@@ -13,6 +13,10 @@ class ComfyError(RuntimeError):
     pass
 
 
+class Cancelled(Exception):
+    """A queued task was removed while it was running."""
+
+
 class ComfyClient:
     def __init__(self, url: str = "http://127.0.0.1:8188", timeout: float = 600):
         self.url = url.rstrip("/")
@@ -45,11 +49,17 @@ class ComfyClient:
             raise ComfyError(f"ComfyUI rejected the workflow: {r.text[:2000]}")
         return r.json()["prompt_id"]
 
-    def wait(self, prompt_ids: list[str], poll: float = 1.0) -> dict[str, dict]:
-        """Block until every prompt finishes; returns prompt_id -> history entry."""
+    def wait(self, prompt_ids: list[str], poll: float = 1.0, should_stop=None) -> dict[str, dict]:
+        """Block until every prompt finishes; returns prompt_id -> history entry.
+        should_stop() returning True cancels the unfinished prompts and raises Cancelled."""
         done: dict[str, dict] = {}
         deadline = time.monotonic() + self.timeout * max(1, len(prompt_ids))
         while len(done) < len(prompt_ids):
+            if should_stop and should_stop():
+                for pid in prompt_ids:
+                    if pid not in done:
+                        self.cancel(pid)
+                raise Cancelled("cancelled")
             if time.monotonic() > deadline:
                 raise ComfyError("Timed out waiting for ComfyUI")
             for pid in prompt_ids:
@@ -65,6 +75,17 @@ class ComfyClient:
                     done[pid] = h
             time.sleep(poll)
         return done
+
+    def cancel(self, prompt_id: str) -> None:
+        """Take a prompt out of ComfyUI's queue, or stop it if it's the one rendering."""
+        try:
+            q = requests.get(f"{self.url}/queue", timeout=10).json()
+            if any(len(item) > 1 and item[1] == prompt_id for item in q.get("queue_running", [])):
+                requests.post(f"{self.url}/interrupt", json={"prompt_id": prompt_id}, timeout=10)
+            else:
+                requests.post(f"{self.url}/queue", json={"delete": [prompt_id]}, timeout=10)
+        except requests.RequestException:
+            pass
 
     def fetch_images(self, history: dict, output_node: str) -> list[bytes]:
         images = history["outputs"].get(output_node, {}).get("images", [])

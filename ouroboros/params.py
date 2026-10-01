@@ -315,4 +315,6 @@ def variants(p: GenParams, n: int, phase: str) -> list[GenParams]:
         if v in out:  # hit a bound; spend the slot on a new seed instead
             v = replace(v, seed=random.randrange(2**32))
         out.append(v)
+    while len(out) < n:  # a batch larger than the spread: the rest try new seeds
+        out.append(replace(p, seed=random.randrange(2**32)))
     return out

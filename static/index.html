@@ -198,6 +198,17 @@
   .key-state { font-size: 12px; margin-top: 2px; color: var(--muted); }
   .key-state.ok { color: var(--ok); }
   @media (max-width: 800px) { .key-row { grid-template-columns: 1fr auto auto; } .key-row > div:first-child { grid-column: 1 / -1; } }
+  .fix-box { margin-top: 6px; }
+  .fix-box img.thumb { margin-top: 2px; }
+  .fix-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .fix-list { display: grid; gap: 16px; }
+  .fix-list .fix-pair + .fix-pair { border-top: 1px solid var(--border); padding-top: 14px; }
+  .fix-pair img.thumb { max-height: 420px; }
+  ul.issues { margin: 4px 0 8px; padding-left: 0; list-style: none; font-size: 12px; }
+  ul.issues li { margin: 2px 0; }
+  .sev { letter-spacing: -2px; margin-right: 4px; font-size: 10px; }
+  .sev.s1 { color: var(--muted); } .sev.s2 { color: var(--warn); } .sev.s3 { color: var(--bad); }
+  .list-item div.thumb { width: 72px; aspect-ratio: 1; background: #0b0c0f; border-radius: 6px; color: var(--muted); }
   .btn.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
   .bin-bar { float: right; display: flex; align-items: center; gap: 10px; font-size: 12px; margin-top: -3px; }
   .status.done, .status.generated { color: var(--ok); } .status.review { color: var(--warn); } .status.stopped, .status.failed { color: var(--bad); }
@@ -342,9 +353,11 @@
           <h2>Prompt</h2>
           <label class="field-label" for="home-desc">Describe it &mdash; the LLM writes both prompts</label>
           <textarea id="home-desc" rows="3" placeholder="a stern woman with a black bob in a red work shirt&#10;(or leave empty and use just the reference image)"></textarea>
-          <div class="row" style="gap:8px;margin-top:8px">
+          <div class="row" style="gap:8px;margin-top:8px;align-items:center">
             <button class="btn" id="write-prompts">Write prompts</button>
-            <button class="btn small" id="clear-prompts">Clear prompts</button>
+            <label class="check" style="margin:0" title="Before writing, the LLM picks LoRAs from everything installed (keeping any you've selected), and the prompts are then written for all of them">
+              <input type="checkbox" id="prompt-loras"> Also choose LoRAs</label>
+            <button class="btn small" id="clear-prompts" style="margin-left:auto">Clear prompts</button>
           </div>
           <label class="field-label" for="home-pos">Positive</label>
           <textarea id="home-pos" rows="5"></textarea>
@@ -355,14 +368,13 @@
 
         <div class="panel">
           <h2>LoRAs</h2>
-          <label class="check" title="Sends your prompt and reference to the LLM with a menu of every installed LoRA and asks which suit this render">
-            <input type="checkbox" id="lora-auto"> Let the LLM choose from all installed LoRAs</label>
-          <div id="lora-auto-note" class="muted" style="font-size:12px;margin:6px 0 10px"></div>
+          <div id="lora-auto-note" class="muted" style="font-size:12px;margin:0 0 10px"></div>
           <div id="lora-selected"></div>
           <div class="row" style="gap:8px;margin-top:8px">
             <button class="btn" id="lora-open">Browse LoRAs…</button>
-            <button class="btn small hide" id="lora-resuggest">Ask again</button>
           </div>
+          <p class="muted" style="font-size:12px;margin:8px 0 0">Selected LoRAs are taken into account when the prompts are
+            written (their trigger words go in). To have the LLM pick some, tick <b>Also choose LoRAs</b> by Write prompts.</p>
         </div>
 
         <div class="panel">
@@ -389,6 +401,8 @@
               <select id="g-checkpoint" class="checkpoint-select"><option value="">workflow default</option></select>
             </label>
           </div>
+          <label class="check" style="margin-top:12px" title="After rendering, the LLM looks at each image for flaws (hands, anatomy, proportions, artifacts) and repairs them. The original is kept next to the fixed version.">
+            <input type="checkbox" id="g-autofix"> Auto-fix each image afterwards</label>
         </div>
 
         <div class="panel">
@@ -407,11 +421,13 @@
               <label>Threshold <input id="a-threshold" type="number" min="0" max="100" placeholder="settings"></label>
               <label>Max rounds <input id="a-max-rounds" type="number" min="1" max="100" placeholder="settings"></label>
               <label>Plateau rounds <input id="a-plateau" type="number" min="1" max="50" placeholder="settings"></label>
-              <label>Candidates / round <input id="a-candidates" type="number" min="1" max="16" placeholder="settings"></label>
+              <label title="Leave empty for the sliding batch (large first, smaller as it converges)">Fixed batch size <input id="a-candidates" type="number" min="1" max="16" placeholder="sliding"></label>
               <label>Extra items
                 <select id="a-extras"><option value="">settings</option><option value="true">penalize</option><option value="false">allow</option></select></label>
               <label>Refine hands
                 <select id="a-hands"><option value="">settings</option><option value="true">yes</option><option value="false">no</option></select></label>
+              <label title="Look for flaws (hands, anatomy, proportions) in the final image and repair them">Auto-fix the result
+                <select id="a-autofix"><option value="">settings</option><option value="true">yes</option><option value="false">no</option></select></label>
               <label>LoRA choice
                 <select id="a-lora-mode"><option value="">settings</option><option value="auto">AI picks</option><option value="workflow">workflow's own</option><option value="off">none</option></select></label>
             </div>
@@ -433,7 +449,16 @@
 
   <section class="tab" id="tab-queue">
     <div class="panel">
-      <h2>Queued jobs</h2>
+      <button class="btn small" id="gen-clear" style="float:right;margin-top:-4px">Clear finished</button>
+      <h2>Generations</h2>
+      <p class="muted" style="font-size:12px;margin:-4px 0 10px">
+        Renders from <a href="#" data-goto="home">Home</a> and auto-fixes from History, one at a time in
+        this order. Each finished one is saved to History.</p>
+      <div id="gen-queue"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Automatic runs</h2>
       <p class="muted" style="font-size:12px;margin:-4px 0 10px">
         Jobs are created on the <a href="#" data-goto="home" style="color:var(--accent)">Home</a> tab with
         <b>Run automatically</b>.</p>
@@ -560,8 +585,10 @@
           <label>Threshold (0–100) <input name="loop.threshold" type="number" min="0" max="100"></label>
           <label>Max rounds <input name="loop.max_rounds" type="number" min="1"></label>
           <label>Plateau rounds <input name="loop.plateau_rounds" type="number" min="1"></label>
-          <label>Max cost (USD, OpenAI) <input name="loop.max_cost_usd" type="number" step="0.05" min="0"></label>
-          <label>Candidates / round <input name="loop.candidates_per_round" type="number" min="1" max="16"></label>
+          <label>Max cost (USD, hosted judge) <input name="loop.max_cost_usd" type="number" step="0.05" min="0"></label>
+          <label title="Round 1 renders this many (up to 16): the most options while the LoRAs and prompt are still open">First-round batch <input name="loop.batch_start" type="number" min="2" max="16"></label>
+          <label title="The batch shrinks toward this as the job gets tuned (rounds, phase, score)">Final batch <input name="loop.batch_end" type="number" min="1" max="8"></label>
+          <label title="LoRAs may be switched (or dropped) in this many first rounds while exploring; after that only their strengths change">LoRA switching rounds <input name="loop.lora_switch_rounds" type="number" min="1" max="20"></label>
           <label>Send top-k to judge <input name="loop.send_top_k" type="number" min="1" max="16"></label>
           <label class="check" style="margin-top:18px"><input type="checkbox" name="loop.local_prefilter">Local pre-filter (DINOv2)</label>
           <label title="While one job waits for the LLM, the others' images render.">Jobs at once <input name="queue.parallel_jobs" type="number" min="1" max="8"></label>
@@ -616,6 +643,25 @@
         <p class="muted" style="margin:8px 0 0">LoRAs outside these folders (such as a hand-fix LoRA) stay as saved in the workflow.
           The checkpoint's family (Pony, Illustrious, Flux) comes from its name; LoRAs made for another family are skipped.
           Flux checkpoints can't run in this SDXL workflow. The Civitai key is under API keys above.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Auto-fix</legend>
+        <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+          <label class="check" style="grid-column:1/-1"><input type="checkbox" name="loop.auto_fix">Auto-fix the final image of each automatic run</label>
+          <label title="Each round: repair, then a before/after review">Rounds <input name="autofix.max_rounds" type="number" min="1" max="6"></label>
+          <label>Repairs per round <input name="autofix.fixes_per_round" type="number" min="1" max="6"></label>
+          <label title="1 = barely noticeable, 2 = noticeable, 3 = glaring">Fix issues from severity
+            <select name="autofix.min_severity"><option value="1">1 (everything)</option><option value="2">2 (noticeable)</option><option value="3">3 (glaring only)</option></select></label>
+          <label title="How strongly a region is repainted (+0.1 for glaring issues)">Repaint denoise <input name="autofix.denoise" type="number" step="0.05" min="0.2" max="0.9"></label>
+          <label title="For problems spread over the whole image">Whole-image denoise <input name="autofix.img2img_denoise" type="number" step="0.05" min="0.1" max="0.7"></label>
+          <label title="Larger lets the model count fingers; smaller is cheaper">Image size for the check (px) <input name="autofix.image_max_side" type="number" min="512" max="2048" step="64"></label>
+          <label title="Automatic runs: the fixed image is kept unless the likeness score drops by more than this">Likeness margin (points) <input name="autofix.keep_margin" type="number" step="0.5" min="0" max="20"></label>
+        </div>
+        <p class="muted" style="margin:8px 0 0">The judge model looks at the image on its own (no reference) for flaws: finger counts,
+          impossible joints, extra limbs, distorted proportions, melted faces, fused clothing, artifacts. It ignores what the prompt
+          asks for. Each flaw is repainted where it is (hands with the hand refiner), then a before/after review keeps the result
+          only if it is clearly better. The original is always kept. On Home it's a checkbox under Generation; in History, a
+          button on each image.</p>
       </fieldset>
       <fieldset>
         <legend>Pose ControlNet and hand refiner</legend>
@@ -712,7 +758,7 @@ $$("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---- home: manual generation ----------------------------------------------------
 const refs = {style: null, pose: null};      // {name, b64} per slot
-let loraCatalog = null, loraPicks = [], genPoll = null;
+let loraCatalog = null, loraPicks = [];
 
 $("#two-refs").onchange = e => {
   $("#refs").classList.toggle("two", e.target.checked);
@@ -747,7 +793,7 @@ function syncPromptLock() {
   pos.disabled = neg.disabled = !!hasDesc;
   const btn = $("#write-prompts");
   btn.disabled = writingPrompts || (!hasDesc && !refs.style);
-  if (!writingPrompts) btn.textContent = hasDesc ? "Write prompts and choose LoRAs" : "Write prompts";
+  if (!writingPrompts) btn.textContent = $("#prompt-loras").checked ? "Write prompts and choose LoRAs" : "Write prompts";
   $("#prompt-note").textContent = hasPrompts
     ? "Your prompts are in use. Clear them to describe it in words instead."
     : hasDesc ? "The LLM will turn this into a positive and negative prompt when you generate."
@@ -759,20 +805,21 @@ $("#clear-prompts").onclick = () => {
   $("#home-pos").value = $("#home-neg").value = "";
   syncPromptLock(); $("#home-desc").focus();
 };
+// With "Also choose LoRAs" the LoRAs are picked first, so the prompts can be written for
+// the whole set (their trigger words and what each one does).
 $("#write-prompts").onclick = async () => {
-  const btn = $("#write-prompts"), chooseLoras = !!$("#home-desc").value.trim();
-  writingPrompts = true; btn.disabled = true; btn.textContent = "Writing prompts…";
+  const btn = $("#write-prompts");
+  writingPrompts = true; btn.disabled = true;
+  if ($("#prompt-loras").checked) { btn.textContent = "Choosing LoRAs…"; await chooseLoras(); }
+  btn.textContent = "Writing prompts…";
   try {
     const r = await api("/api/prompt/preview", {
-      description: $("#home-desc").value, image_b64: refs.style ? refs.style.b64 : undefined});
+      description: $("#home-desc").value, image_b64: refs.style ? refs.style.b64 : undefined,
+      loras: lorasForRequest()});
     $("#home-pos").value = r.positive || ""; $("#home-neg").value = r.negative || "";
     syncPromptLock();
     toast(r.notes ? "Prompts written: " + r.notes.slice(0, 80) : "Prompts written");
   } catch (e) { toast(e.message); }
-  if (chooseLoras && $("#home-pos").value.trim()) {
-    btn.textContent = "Choosing LoRAs…";
-    await suggestLoras();
-  }
   writingPrompts = false; syncPromptLock(); updateEstimate();
 };
 
@@ -1065,43 +1112,31 @@ $("#lora-selected").addEventListener("click", e => {
   }
 });
 
-// ---- let the LLM choose the LoRAs ----
-let lastSuggestKey = "";
-function suggestKey() {
-  return [$("#home-pos").value.trim(), $("#home-neg").value.trim(), $("#home-desc").value.trim(),
-          refs.style ? refs.style.name : ""].join("|");
-}
-async function suggestLoras(quiet) {
-  const key = suggestKey();
-  if (!key.replace(/\|/g, "")) {
-    if (!quiet) toast("Write a prompt or add a reference first");
-    $("#lora-auto").checked = false;
-    return;
-  }
+// ---- let the LLM choose LoRAs (only when "Also choose LoRAs" is ticked). LoRAs already
+// selected stay, count toward the limit, and are shown to it so it doesn't fight them. ----
+const lorasForRequest = () => loraPicks.map(l => ({name: l.comfy_name, strength: l.strength}));
+async function chooseLoras() {
   const note = $("#lora-auto-note");
-  note.innerHTML = `<span class="stage"><span class="spin"></span> asking the LLM…</span>`;
-  $("#lora-resuggest").disabled = true;
+  note.innerHTML = `<span class="stage"><span class="spin"></span> the LLM is choosing LoRAs…</span>`;
   try {
     const r = await api("/api/loras/suggest", {
       positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
-      description: $("#home-desc").value.trim(),
+      description: $("#home-desc").value.trim(), keep: lorasForRequest(),
       image_b64: refs.style ? refs.style.b64 : undefined});
-    loraPicks = (r.picks || []).map(p => ({...p, strength: p.strength}));
+    const added = (r.picks || []).filter(p => !loraPicks.some(l => l.id === p.id));
+    loraPicks.push(...added.map(p => ({...p, strength: p.strength})));
     renderPicks();
-    lastSuggestKey = key;
-    note.textContent = (loraPicks.length ? `Chose ${loraPicks.length} of ${r.considered}. ` : `Chose none of ${r.considered}. `)
+    note.textContent = (added.length ? `The LLM added ${added.length} of ${r.considered}. ` : "The LLM added none. ")
       + (r.notes || "");
   } catch (e) {
     note.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
   }
-  $("#lora-resuggest").disabled = false;
 }
-$("#lora-auto").onchange = e => {
-  $("#lora-resuggest").classList.toggle("hide", !e.target.checked);
-  if (e.target.checked) suggestLoras();
-  else { $("#lora-auto-note").textContent = ""; lastSuggestKey = ""; }
+$("#prompt-loras").onchange = e => {
+  try { localStorage.setItem("promptLoras", e.target.checked ? "1" : ""); } catch {}
+  syncPromptLock(); updateEstimate();
 };
-$("#lora-resuggest").onclick = () => suggestLoras();
+try { $("#prompt-loras").checked = localStorage.getItem("promptLoras") === "1"; } catch {}
 
 // ---- generate ----
 function genRequest() {
@@ -1124,6 +1159,7 @@ function genRequest() {
     sampler_name: $("#g-sampler").value, scheduler: $("#g-scheduler").value,
     size: size === "auto" ? "auto" : size.split("x").map(Number),
     mode: $("#g-mode").value || null, checkpoint: $("#g-checkpoint").value || null,
+    autofix: $("#g-autofix").checked,
     loras: loraPicks.map(l => ({name: l.comfy_name, strength: l.strength})),
   };
 }
@@ -1143,17 +1179,28 @@ function estimateFor(req) {
   const extra = 1 + (req.ipadapter ? e.ipadapter : 0) + (req.pose_control ? e.control : 0);
   if (!["running", "external"].includes(e.comfyui)) parts.push(["starting ComfyUI", 60]);
   if (!req.positive && (req.description || req.style_b64)) parts.push(["writing the prompt", e.llm]);
-  if ($("#lora-auto").checked && suggestKey() !== lastSuggestKey) parts.push(["choosing LoRAs", e.llm]);
   if (req.pose_control) parts.push(["reading the pose", 3]);
   const n = Math.max(1, req.batch_size || 1);
   parts.push([`rendering ${n} image${n > 1 ? "s" : ""}`, e.fixed + e.rate * steps * mp * n * extra]);
+  if (req.autofix && e.autofix) {  // per image: a look, then each round's repairs (~1 MP crops) and a review
+    const a = e.autofix, repair = e.fixed + e.rate * (req.steps || 30) * a.denoise * 1.05 * 1.5;
+    parts.push([`auto-fixing (rough)`, n * (8 + a.max_rounds * (a.fixes_per_round * repair + 6))]);
+  }
   return {total: parts.reduce((a, [, t]) => a + t, 0), parts};
+}
+// Seconds of queued work ahead of a new request: what's left of the running task plus
+// the waiting ones (an auto-fix task has no estimate, so it adds nothing it can't know).
+function queueAhead() {
+  return (lastState?.generations || []).reduce((sum, g) =>
+    sum + (g.status === "running" ? Math.max(0, (g.estimate || 0) - (g.elapsed || 0))
+           : g.status === "waiting" ? (g.estimate || 0) : 0), 0);
 }
 const fmtSecs = t => t < 90 ? `${Math.round(t)} s` : `${Math.floor(t / 60)} min ${String(Math.round(t % 60)).padStart(2, "0")} s`;
 function updateEstimate() {
   const el = $("#gen-estimate"), est = estimateFor(genRequest());
   if (!est) { el.textContent = ""; return; }
-  el.innerHTML = `Estimated time <b>~${fmtSecs(est.total)}</b>`;
+  const ahead = queueAhead();
+  el.innerHTML = `Estimated time <b>~${fmtSecs(est.total)}</b>` + (ahead > 1 ? ` <span class="muted">(+ ~${fmtSecs(ahead)} queued ahead)</span>` : "");
   el.title = est.parts.map(([k, t]) => `${k}: ~${fmtSecs(t)}`).join("\n") +
     (estRates.samples ? `\n\nFrom your last ${estRates.samples} renders.` : "\n\nA rough figure until you've rendered a few images.");
 }
@@ -1163,27 +1210,20 @@ $("#do-generate").onclick = async () => {
   const req = genRequest();
   if (!req.positive && !req.description && !req.style_b64)
     return toast("Add a prompt, a description, or a reference image");
-  if ($("#lora-auto").checked && suggestKey() !== lastSuggestKey) {
-    $("#gen-status").textContent = "Choosing LoRAs…";
-    await suggestLoras(true);
-    Object.assign(req, {loras: loraPicks.map(l => ({name: l.comfy_name, strength: l.strength}))});
-  }
   if ($("#g-random").checked) $("#g-seed").value = req.seed;
   launchGeneration(req, estimateFor(req), false);
 };
+$("#g-autofix").onchange = e => { try { localStorage.setItem("autofix", e.target.checked ? "1" : ""); } catch {} };
+try { $("#g-autofix").checked = localStorage.getItem("autofix") === "1"; } catch {}
 // body is what /api/generate gets: the form's request, or {rerun: "manual/<run>"} to
 // reproduce a History entry server-side from what it saved (and not save it again).
 async function launchGeneration(body, est, rerun) {
-  $("#do-generate").disabled = true;
-  setBar(0, !est);
-  $("#gen-status").textContent = rerun ? "Starting the rerun…" : "Starting…";
   try {
-    const {id} = await api("/api/generate", body);
-    pollGeneration(id, est ? est.total : null, rerun);
-  } catch (e) {
-    $("#gen-status").innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
-    $("#do-generate").disabled = false; $("#gen-bar").classList.add("hide");
-  }
+    await api("/api/generate", {...body, estimate: est ? Math.round(est.total) : null});
+    const busy = (lastState?.generations || []).some(g => g.status === "running" || g.status === "waiting");
+    toast((rerun ? "Rerun" : "Generation") + (busy ? " added to the queue" : " started"));
+    poll_now();
+  } catch (e) { toast(e.message); }
 }
 
 // ---- rerun a History entry: its exact settings go back into the Home form (so you can
@@ -1205,7 +1245,7 @@ async function rerunOnHome(r) {
   setv("ip-weight-type", q.ip_weight_type);
   $("#use-pose").checked = !!q.pose_control; setv("pose-strength", q.pose_strength); setv("pose-end", q.pose_end);
   $("#pose-library").value = q.pose_library || "";
-  $("#lora-auto").checked = false; $("#lora-resuggest").classList.add("hide"); $("#lora-auto-note").textContent = "";
+  $("#lora-auto-note").textContent = "";
   const toRef = async (url, name) => url ? {name, b64: await new Promise(async res => {
     const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(await (await fetch(url)).blob()); })} : null;
   $("#two-refs").checked = !!r.pose_url; $("#two-refs").onchange({target: $("#two-refs")});
@@ -1229,37 +1269,51 @@ function setBar(fraction, indeterminate) {
   bar.classList.toggle("indet", !!indeterminate);
   $("#gen-bar .fill").style.width = indeterminate ? "" : `${Math.round(fraction * 1000) / 10}%`;
 }
-function pollGeneration(id, estimate, rerun) {
-  clearInterval(genPoll);
-  const started = Date.now();
-  genPoll = setInterval(async () => {
-    const elapsed = (Date.now() - started) / 1000;
-    if (estimate) setBar(Math.min(elapsed / estimate, 0.97), elapsed > estimate * 1.03);
-    let s;
-    try { s = await api("/api/generate/status?id=" + id); } catch { return; }
-    const secs = Math.round(elapsed);
-    if (s.state === "done" || s.state === "error") {
-      clearInterval(genPoll); genPoll = null;
-      $("#do-generate").disabled = false;
-      if (s.state === "done") { setBar(1, false); setTimeout(() => $("#gen-bar").classList.add("hide"), 800); }
-      else $("#gen-bar").classList.add("hide");
-      loadEstimate(); poll_now();  // the estimate learns from this render; History lists it
-    }
-    const of = estimate ? ` of ~${fmtSecs(estimate)}` : "";
-    $("#gen-status").innerHTML = s.state === "error"
-      ? `<span style="color:var(--bad)">${esc(s.error)}</span>`
-      : s.state === "done" ? `Done in ${fmtSecs(elapsed)} · ${s.images.length} image${s.images.length === 1 ? "" : "s"} · ${rerun ? "rerun, not saved to History" : "saved to History"}`
-      : `<span class="stage"><span class="spin"></span> ${esc(s.state)} · ${secs} s${of}</span>`;
-    if (s.warning) $("#gen-status").innerHTML += ` <span class="muted">(${esc(s.warning)})</span>`;
-    if (s.positive && !$("#home-pos").value.trim()) {   // the LLM wrote them: show what it chose
-      $("#home-pos").value = s.positive; $("#home-neg").value = s.negative || ""; syncPromptLock();
-    }
-    if (s.images && s.images.length) {
-      $("#gen-images").innerHTML = s.images.map(u =>
-        `<div><img class="thumb" src="${esc(u)}"><button class="btn small" data-use="${esc(u)}" style="margin-top:6px">Use as reference</button></div>`).join("");
-    }
-    $("#gen-params").textContent = s.params || "";
-  }, 1000);
+// The Result panel follows the generation queue: the running task's progress (against its
+// estimate), how many wait behind it, and the images of whatever finished last.
+const GEN_DONE = ["done", "error", "cancelled"];
+let shownResult = null;
+function genImagesHtml(g) {
+  const fixed = Object.fromEntries((g.fixed || []).map(f => [f.source, f]));
+  return (g.images || []).map(u => {
+    const f = fixed[u], show = f && f.fixed ? f.fixed : u;
+    const note = !f ? "" : f.fixed ? `<div class="note">Auto-fixed: ${f.found} issue${f.found === 1 ? "" : "s"} found, ${f.left} left ·
+          <a href="${esc(u)}" target="_blank" rel="noopener">original</a></div>`
+        : `<div class="note">Auto-fix: ${f.found ? `no repair kept (${f.found} issue${f.found === 1 ? "" : "s"} found)` : "nothing to fix"}</div>`;
+    return `<div><img class="thumb" src="${esc(show)}">${note}
+      <button class="btn small" data-use="${esc(show)}" style="margin-top:6px">Use as reference</button></div>`;
+  }).join("");
+}
+function renderGenPanel(gens) {
+  const running = gens.find(g => g.status === "running");
+  const waiting = gens.filter(g => g.status === "waiting").length;
+  const latest = gens.filter(g => GEN_DONE.includes(g.status) && g.status !== "cancelled")
+                     .sort((a, b) => (b.finished || 0) - (a.finished || 0))[0];
+  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.rerun ? "Rerun" : "Generation";
+  let status;
+  if (running) {
+    const est = running.estimate, el = running.elapsed || 0;
+    if (est) setBar(Math.min(el / est, 0.97), el > est * 1.03); else setBar(0, true);
+    status = `<span class="stage"><span class="spin"></span> ${kind(running)} · ${esc(running.state)} · ${Math.round(el)} s${
+      est ? ` of ~${fmtSecs(est)}` : ""}</span>`;
+  } else {
+    $("#gen-bar").classList.add("hide");
+    status = !latest ? "Nothing generated yet."
+      : latest.status === "error" ? `<span style="color:var(--bad)">${kind(latest)} failed: ${esc(latest.error)}</span>`
+      : `${kind(latest)} done · ${(latest.images || []).length} image${(latest.images || []).length === 1 ? "" : "s"} · ${
+          latest.history ? "saved to History" : "not saved to History"}`;
+  }
+  if (waiting) status += ` <span class="muted">· ${waiting} more waiting (<a href="#" data-goto="queue">Queue</a>)</span>`;
+  renderOnce("genstatus", status, $("#gen-status"));
+  // Images: the running task's as soon as it has them (auto-fix results follow), else the last finished.
+  const show = running && (running.images || []).length ? running : latest;
+  renderOnce("genimages", show ? genImagesHtml(show) : "", $("#gen-images"));
+  renderOnce("genparams", show ? esc(show.params || "") : "", $("#gen-params"));
+  if (latest && latest.id !== shownResult) {  // something new finished: the estimate learns from it
+    if (shownResult !== null) loadEstimate();
+    shownResult = latest.id;
+  }
+  updateEstimate();
 }
 $("#gen-images").addEventListener("click", async e => {
   const url = e.target.dataset.use;
@@ -1289,7 +1343,7 @@ $("#do-auto").onclick = async () => {
                        pose: $("#pose-library").value || ($("#use-pose").checked ? "reference" : null)}),
       overrides: clean({threshold: num("#a-threshold"), max_rounds: num("#a-max-rounds"),
                         plateau_rounds: num("#a-plateau"), candidates_per_round: num("#a-candidates"),
-                        penalize_extras: pick("#a-extras"), hand_refine: pick("#a-hands"),
+                        penalize_extras: pick("#a-extras"), hand_refine: pick("#a-hands"), auto_fix: pick("#a-autofix"),
                         lora_mode: pick("#a-lora-mode")}),
     });
     await api("/api/start", {});
@@ -1483,8 +1537,44 @@ function renderRound(r, ctx) {
   </div>`;
 }
 
+function renderGenQueue(gens) {
+  const active = gens.filter(g => g.status === "running" || g.status === "waiting").length;
+  const jobs = (lastState?.queue || []).length;
+  $("#queue-count").textContent = active + jobs ? `(${active + jobs})` : "";
+  $("#gen-clear").classList.toggle("hide", !gens.some(g => GEN_DONE.includes(g.status)));
+  if (!gens.length) return `<div class="empty">Nothing queued. Press <b>Generate</b> on Home to add one.</div>`;
+  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.rerun ? "Rerun" : "Generate";
+  return gens.map(g => {
+    const done = GEN_DONE.includes(g.status), on = armed === "gen:" + g.id;
+    const thumb = (g.fixed || []).find(f => f.fixed)?.fixed || (g.images || [])[0];
+    const extras = [g.batch > 1 ? `${g.batch} images` : "", g.autofix ? "+ auto-fix" : "", g.has_reference ? "with reference" : ""]
+      .filter(Boolean).join(" · ");
+    let state;
+    if (g.status === "running") {
+      const pct = g.estimate ? Math.min(97, 100 * (g.elapsed || 0) / g.estimate) : null;
+      state = `<span class="stage"><span class="spin"></span> ${esc(g.state)} · ${Math.round(g.elapsed || 0)} s${
+        g.estimate ? ` of ~${fmtSecs(g.estimate)}` : ""}</span>` + (pct != null ? `<div class="bar"><div class="fill" style="width:${pct}%"></div></div>` : "");
+    } else if (g.status === "waiting") {
+      state = `<span class="muted">#${g.position} in line${g.estimate ? ` · ~${fmtSecs(g.estimate)}` : ""}</span>`;
+    } else if (g.status === "error") {
+      state = `<span style="color:var(--bad)">failed: ${esc(g.error || "")}</span>`;
+    } else if (g.status === "cancelled") {
+      state = `<span class="muted">cancelled</span>`;
+    } else {
+      state = `<span class="status done">done</span>` + (g.history ? ` · <a href="#" data-goto="history">in History</a>` : " · not saved to History");
+    }
+    const btn = done ? `<button class="btn small" data-gen-dismiss="${esc(g.id)}">Dismiss</button>`
+      : `<button class="btn small danger${on ? " armed" : ""}" data-gen-remove="${esc(g.id)}">${
+          on ? (g.status === "running" ? "Click again to cancel" : "Click again to remove") : g.status === "running" ? "Cancel" : "Remove"}</button>`;
+    return `<div class="list-item">
+      ${thumb ? `<img class="thumb" src="${esc(thumb)}">` : `<div class="thumb empty" style="display:flex;align-items:center;justify-content:center">${g.status === "running" ? "▶" : "…"}</div>`}
+      <div style="min-width:0"><div class="name">${kind(g)}${extras ? ` <span class="muted" style="font-weight:400">· ${esc(extras)}</span>` : ""}</div>
+        <div class="clip">${esc(g.label || "")}</div><div style="font-size:12px;margin-top:3px">${state}</div></div>
+      ${btn}</div>`;
+  }).join("");
+}
+
 function renderQueue(queue) {
-  $("#queue-count").textContent = queue.length ? `(${queue.length})` : "";
   if (!queue.length) return `<div class="empty">The queue is empty.</div>`;
   return queue.map((j, i) => `<div class="list-item">
     ${j.reference ? `<img class="thumb" src="${j.reference}">` : `<div></div>`}
@@ -1533,6 +1623,42 @@ function renderBin(bin) {
       title="Permanently deletes everything in runs/_removed/">${on ? "Click again to delete permanently" : "Empty recycle bin"}</button>`;
 }
 
+// ---- auto-fix results in History ----
+function fixTask(run, name) {  // an auto-fix of this image waiting or running in the queue
+  return (lastState?.generations || []).find(g => g.kind === "autofix" && g.target === run
+    && (g.sources || []).includes(name) && (g.status === "waiting" || g.status === "running"));
+}
+function issuesList(issues) {
+  return issues.length ? `<ul class="issues">${issues.map(i =>
+    `<li><span class="sev s${i.severity}">${"●".repeat(i.severity)}</span> ${esc(i.what)} <span class="muted">(${esc(i.region)})</span></li>`).join("")}</ul>`
+    : `<div class="muted" style="font-size:12px">none</div>`;
+}
+function autofixHtml(run, name, a) {
+  const task = fixTask(run, name);
+  const button = `<button class="btn small" data-autofix-run="${esc(run)}" data-autofix-image="${esc(name)}" ${task ? "disabled" : ""}>${
+    task ? (task.status === "running" ? "Auto-fixing…" : "Auto-fix queued") : a && a.state === "done" ? "Auto-fix again" : "Auto-fix"}</button>`;
+  if (!a || task) return `<div class="fix-box">${button}</div>`;
+  if (a.state === "error" || a.state === "cancelled")
+    return `<div class="fix-box">${button} <span style="color:var(--bad);font-size:12px">${a.state === "error" ? "failed: " + esc(a.error || "") : "cancelled"}</span></div>`;
+  if (a.state !== "done") return `<div class="fix-box">${button}</div>`;
+  const kept = a.rounds.filter(x => x.kept).length;
+  return `<div class="fix-box">
+    ${a.fixed_url ? `<div class="note">Auto-fixed</div><img class="thumb" src="${esc(a.fixed_thumb || a.fixed_url)}" data-full="${esc(a.fixed_url)}">` : ""}
+    <div style="font-size:12px;margin:4px 0">${a.issues_found.length ? `${a.issues_found.length} issue${a.issues_found.length === 1 ? "" : "s"} found · ${
+      kept} of ${a.rounds.length} repair round${a.rounds.length === 1 ? "" : "s"} kept · ${a.issues_left.length} left` : "Nothing needed fixing."}</div>
+    ${a.issues_found.length ? `<details><summary class="muted" style="cursor:pointer;font-size:12px">What it found and tried</summary>
+      <div class="note">Found</div>${issuesList(a.issues_found)}
+      ${a.rounds.map(x => `<div class="note">Round ${x.round}: ${x.kept ? "kept" : "discarded"} · repaired ${esc(x.targeted.map(t => t.region).join(", "))}</div>
+        ${x.new_problems ? `<div class="muted" style="font-size:12px">${esc(x.new_problems)}</div>` : ""}`).join("")}
+      <div class="note">Still visible</div>${issuesList(a.issues_left)}</details>` : ""}
+    ${button}</div>`;
+}
+function showFixModal(r, name, url) {
+  openModal(`<div class="modal-head"><h3>Auto-fix · ${esc(r.job || r.run)}</h3><button class="btn small" data-close>Close</button></div>
+    <div class="fix-pair"><div><div class="note">Before</div><img class="thumb" src="${esc(url)}"></div>
+      <div>${autofixHtml(r.run, name, (r.autofix || {})[name])}</div></div>`);
+}
+
 function renderHistory(runs) {
   if (!runs.length) return `<div class="empty">Nothing yet. Generations from Home and finished automatic runs show up here.</div>`;
   return runs.map(r => r.kind === "manual" ? manualCard(r) : `<div class="card">
@@ -1541,9 +1667,12 @@ function renderHistory(runs) {
     <div><span class="status ${esc(r.status)}">${esc(r.status)}</span> <span class="muted">· score ${fmt(r.best_score)} · ${r.rounds} rounds${r.cost_usd ? ` · $${r.cost_usd}` : ""}</span></div>
     <div class="muted" style="font-size:12px">${esc(r.finished || r.run)}</div>
     ${r.error ? `<div class="clip" style="color:var(--bad);font-size:12px" title="${esc(r.error)}">${esc(r.error)}</div>` : ""}
-    <div style="display:flex;gap:6px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn small" data-view="${esc(r.run)}">View rounds</button>
       <button class="btn small" data-requeue="${esc(r.job)}">Run again</button>
+      ${r.best_url ? (r.autofix?.["best.png"] || fixTask(r.run, "best.png")
+        ? `<button class="btn small" data-fix-view="${esc(r.run)}">Auto-fix…</button>`
+        : `<button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-image="best.png">Auto-fix</button>`) : ""}
       ${deleteButton(r.run)}
     </div>
   </div>`).join("");
@@ -1572,6 +1701,8 @@ function render(s) {
   if (!viewingRun) renderOnce("run", renderRun(shown, s.running), $("#run-panel"));
   renderOnce("queue", renderQueue(s.queue), $("#queue-list"));
   renderOnce("history", renderHistory(s.runs), $("#history"));
+  renderGenPanel(s.generations || []);
+  renderOnce("genqueue", renderGenQueue(s.generations || []), $("#gen-queue"));
   renderOnce("bin", renderBin(s.bin), $("#bin-bar"));
 
   const logEl = $("#log"), atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
@@ -1581,7 +1712,8 @@ function render(s) {
 
 async function poll() {
   try { render(await api("/api/state")); } catch (e) { /* server restarting */ }
-  setTimeout(poll, lastState?.running ? 1000 : 3000);
+  const genActive = (lastState?.generations || []).some(g => g.status === "running" || g.status === "waiting");
+  setTimeout(poll, lastState?.running || genActive ? 1000 : 3000);
 }
 
 // A Home tab generation: one card per generation, with every image of its batch.
@@ -1595,7 +1727,8 @@ function manualCard(r) {
     ${grid}
     <div class="name" title="${esc(title)}">${esc(title || "Generation")}</div>
     <div><span class="status ${esc(r.status === "error" ? "failed" : r.status)}">${esc(r.status === "done" ? "generated" : r.status)}</span>
-      <span class="muted">· ${n} image${n === 1 ? "" : "s"}${r.timing?.total_s ? ` · ${fmtSecs(r.timing.total_s)}` : ""}</span></div>
+      <span class="muted">· ${n} image${n === 1 ? "" : "s"}${r.timing?.total_s ? ` · ${fmtSecs(r.timing.total_s)}` : ""}${
+        Object.values(r.autofix || {}).some(a => a.fixed_url) ? " · auto-fixed" : ""}</span></div>
     <div class="muted" style="font-size:12px">${esc(r.started)}</div>
     ${r.error ? `<div class="clip" style="color:var(--bad);font-size:12px" title="${esc(r.error)}">${esc(r.error)}</div>` : ""}
     <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -1616,7 +1749,12 @@ function showManualRun(r) {
       <button class="btn small" data-reuse="${esc(r.run)}" ${r.positive ? "" : "disabled"}>Use prompts on Home</button>
       <button class="btn small" data-close>Close</button></div>
     ${r.error ? `<div class="confirm bad" style="margin:0 0 12px">${esc(r.error)}</div>` : ""}
-    ${(r.images || []).length ? `<div class="gen-images">${r.images.map(u => `<img class="thumb" src="${esc(u)}">`).join("")}</div>` : ""}
+    ${(r.images || []).length ? `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class="muted" style="font-size:12px">Auto-fix looks for flaws (hands, anatomy, proportions, artifacts) and repairs them; the original stays.</span>
+        ${r.images.length > 1 ? `<button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-all="1">Auto-fix all</button>` : ""}</div>
+      <div class="fix-list">${r.images.map((u, i) => `<div class="fix-pair"><div><div class="note">${
+        r.images.length > 1 ? `Image ${i + 1}` : "Image"}</div><img class="thumb" src="${esc(u)}"></div>
+        <div>${autofixHtml(r.run, (r.image_names || [])[i], (r.autofix || {})[(r.image_names || [])[i]])}</div></div>`).join("")}</div>` : ""}
     <table class="kv-table" style="margin:14px 0">
       <tr><th>Settings</th><td>${esc(r.params || "–")}</td></tr>
       <tr><th>LoRAs</th><td>${esc(loras)}</td></tr>
@@ -1674,6 +1812,23 @@ document.addEventListener("click", async e => {
       if (viewingRun === run) $("#back-live").click();
       toast("Moved to the recycle bin"); poll_now();
     }
+    if (t.dataset.genRemove) {
+      const key = "gen:" + t.dataset.genRemove;
+      if (armed !== key) return arm(key);
+      armed = null; clearTimeout(armTimer);
+      const g = await api("/api/generations/remove", {id: t.dataset.genRemove});
+      toast(g.status === "cancelled" ? "Removed from the queue" : "Cancelling…"); poll_now();
+    }
+    if (t.dataset.autofixRun) {
+      const run = t.dataset.autofixRun, r = manualRun(run);
+      const images = t.dataset.autofixAll ? (r?.image_names || []) : [t.dataset.autofixImage];
+      await api("/api/autofix", {run, images});
+      t.disabled = true; t.textContent = "Auto-fix queued";
+      toast(`Auto-fix queued (${images.length} image${images.length === 1 ? "" : "s"}) — follow it in the Queue tab`); poll_now();
+    }
+    if (t.dataset.fixView) { const r = manualRun(t.dataset.fixView); if (r) showFixModal(r, "best.png", r.best_url); }
+    if (t.dataset.genDismiss) { await api("/api/generations/remove", {id: t.dataset.genDismiss}); poll_now(); }
+    if (t.id === "gen-clear") { await api("/api/generations/clear", {}); poll_now(); }
     if (t.dataset.emptyBin != null) {
       if (armed !== "bin") return arm("bin");
       armed = null; clearTimeout(armTimer);
@@ -1938,6 +2093,7 @@ async function loadSettings() {
   const cn = s.controlnet || {}, hs = s.hands || {};
   set("controlnet.pose_strength", cn.pose_strength ?? 0.6); set("controlnet.pose_end", cn.pose_end ?? 0.8);
   set("controlnet.pose_hands", cn.pose_hands ?? true); set("hands.denoise", hs.denoise ?? 0.6);
+  for (const [k, v] of Object.entries(s.autofix || {})) set("autofix." + k, v);
   await loadCheckpoints();
   set("defaults.checkpoint", s.defaults.checkpoint || "");
   set("defaults.size", s.defaults.size || "auto");
@@ -2015,16 +2171,22 @@ $("#settings-form").onsubmit = async e => {
                   reasoning_effort: val("deepinfra.reasoning_effort").value || null},
     },
     loop: {threshold: num("loop.threshold"), max_rounds: num("loop.max_rounds"), plateau_rounds: num("loop.plateau_rounds"),
-           max_cost_usd: num("loop.max_cost_usd"), candidates_per_round: num("loop.candidates_per_round"),
+           max_cost_usd: num("loop.max_cost_usd"), batch_start: optNum("loop.batch_start"), batch_end: optNum("loop.batch_end"),
+           lora_switch_rounds: optNum("loop.lora_switch_rounds"),
            send_top_k: num("loop.send_top_k"), local_prefilter: val("loop.local_prefilter").checked,
            min_reference_denoise: num("loop.min_reference_denoise"), allow_inpaint_reference: val("loop.allow_inpaint_reference").checked,
            confirm_pass: val("loop.confirm_pass").checked, penalize_extras: val("loop.penalize_extras").checked,
            prompt_sees_reference: val("loop.prompt_sees_reference").checked, hand_refine: val("loop.hand_refine").checked,
+           auto_fix: val("loop.auto_fix").checked,
            history_keep_rounds: num("loop.history_keep_rounds"), prompt_token_budget: num("loop.prompt_token_budget")},
     defaults: {checkpoint: val("defaults.checkpoint").value, size: val("defaults.size").value, pose: val("defaults.pose").value},
     controlnet: {pose_strength: num("controlnet.pose_strength") || 0.6, pose_end: num("controlnet.pose_end") || 0.8,
                  pose_hands: val("controlnet.pose_hands").checked},
     hands: {denoise: num("hands.denoise") || 0.6},
+    autofix: {max_rounds: optNum("autofix.max_rounds"), fixes_per_round: optNum("autofix.fixes_per_round"),
+              min_severity: optNum("autofix.min_severity"), denoise: optNum("autofix.denoise"),
+              img2img_denoise: optNum("autofix.img2img_denoise"), image_max_side: optNum("autofix.image_max_side"),
+              keep_margin: optNum("autofix.keep_margin")},
     queue: {parallel_jobs: Math.max(1, num("queue.parallel_jobs") || 1),
             llm_parallel: Math.max(1, num("queue.llm_parallel") || 1)},
     comfyui: {autostart: val("comfyui.autostart").checked, stop_on_exit: val("comfyui.stop_on_exit").checked},

@@ -16,7 +16,13 @@ Each round:
    the score passes your threshold, stops improving, or runs out of budget.
 
 Queued jobs run one after another. There's also a **Home** tab for one-off renders with your
-own settings, a **History** of everything generated, and a **LoRA** browser.
+own settings (queued, so you can keep adding more), a **History** of everything generated, and
+a **LoRA** browser.
+
+**Auto-fix** checks a finished image on its own for things that look wrong (six fingers,
+impossible joints, a pinched waist, melted faces, artifacts), repaints just those regions,
+and keeps the result only if a before/after review says it's better. It can run after any
+generation, after automatic runs, or on any image in History.
 
 The judge can be a hosted model on [DeepInfra](https://deepinfra.com) (default, a fraction of
 a cent per round), a model in [Ollama](https://ollama.com) on your network, or OpenAI.
@@ -68,11 +74,20 @@ pills at the top show when ComfyUI, the judge and the workflow are ready.
 Your settings are saved to `config.json` and your keys to `api_keys.json`; neither is
 committed.
 
+If you use a classified LoRA library ([lora-classifier](IMPLEMENTATION.md#one-lora-library)
+output in `loras.catalog_dir`), write the short LoRA descriptions the AI chooses LoRAs by once,
+and again after adding LoRAs:
+
+```bash
+.venv/bin/python -m ouroboros briefs
+```
+
 ## More
 
 - [IMPLEMENTATION.md](IMPLEMENTATION.md): how the loop works, the judge and its rubric,
   LoRA selection, poses, the IP-Adapter, the hand refiner, and every setting.
 - Headless mode: `.venv/bin/python -m ouroboros run` processes the queue without the UI.
+- Tests (no ComfyUI or LLM needed): `.venv/bin/pip install -r requirements-dev.txt`, then `.venv/bin/python -m pytest`.
 
 ## License
 

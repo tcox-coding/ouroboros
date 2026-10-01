@@ -14,7 +14,6 @@ import shutil
 import threading
 import time
 import webbrowser
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -22,7 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import requests
 
 from . import generate as generate_mod
-from . import keys, thumbs
+from . import autofix, keys, thumbs
 from .backends import deepinfra_models, ollama_models
 from .jobs import IMAGE_EXTS, STATUSES, Queue, load_job
 from .loras import checkpoint_base, compatible
@@ -30,6 +29,7 @@ from .params import lora_stem
 from .runner import ROOT, Runner, comfy_launcher, load_config, lora_library, rel_url, save_config
 
 STATIC = ROOT / "static"
+FILE_DIRS = ("jobs", "runs", "cache/lora_images", "cache/reruns", "poses")  # what /files/ serves
 runner = Runner()
 queue = Queue(ROOT / "jobs")
 
@@ -87,8 +87,16 @@ def library_item(name: str) -> dict:
             "loras": loras.read_text(encoding="utf-8").strip() if loras.exists() else ""}
 
 
+def selected_lora_notes(cfg: dict, loras) -> str:
+    """Prompt-writer notes for LoRAs picked in the UI ([{"name", "strength"}, ...])."""
+    from .lora_picker import prompt_notes
+    picks = tuple((l["name"], float(l.get("strength", 0.8))) for l in loras or [] if l.get("name"))
+    return prompt_notes(lora_library(cfg), picks) if picks else ""
+
+
 def preview_prompt(data: dict) -> dict:
-    """Write a prompt from a description (as a job would at its start) without queueing."""
+    """Write a prompt from a description (as a job would at its start) without queueing.
+    LoRAs already selected (data["loras"]) are written for: their trigger words go in."""
     from .backends import make_backend
     from .prompter import write_prompt
     from .workflow import Workflows
@@ -106,7 +114,7 @@ def preview_prompt(data: dict) -> dict:
         reference = Image.open(io.BytesIO(base64.b64decode(data["image_b64"].split(",", 1)[-1])))
     return write_prompt(make_backend(cfg["judge"]), data["description"], data.get("prompt", ""),
                         data.get("negative", ""), style_pos, style_neg, reference,
-                        cfg["judge"].get("image_max_side", 512))
+                        cfg["judge"].get("image_max_side", 512), selected_lora_notes(cfg, data.get("loras")))
 
 
 def runs_list(limit: int = 60) -> list[dict]:
@@ -137,6 +145,7 @@ def _loop_entry(d: Path) -> dict:
     s["run"] = d.name
     s["best_url"] = rel_url(d / "best.png") if (d / "best.png").exists() else None
     s["best_thumb"] = thumbs.url(ROOT, d / "best.png") if s["best_url"] else None
+    s["autofix"] = autofix_view(d)
     return s
 
 
@@ -169,7 +178,8 @@ def _manual_entry(d: Path) -> dict:
             "params": rec.get("params", ""), "size": rec.get("size"),
             "loras": rec.get("loras") or [], "timing": rec.get("timing"),
             "ipadapter": bool(rec.get("ipadapter")), "control": bool(rec.get("control")),
-            "request": rec.get("request") or {}}
+            "request": rec.get("request") or {}, "autofix": autofix_view(d),
+            "image_names": [f.name for f in files]}
 
 
 def run_detail(name: str) -> dict:
@@ -369,6 +379,8 @@ def remove_run(name: str) -> None:
         raise FileNotFoundError(name)
     if name in runner.active_runs() or (manual and leaf in generate_mod.active_runs()):
         raise RuntimeError("that run is in progress")
+    if name in generate_mod.busy_targets():
+        raise RuntimeError("an auto-fix of this entry is queued or running; remove it from the queue first")
     trash = ROOT / "runs" / "_removed"
     trash.mkdir(exist_ok=True)
     dest = trash / (f"manual_{leaf}" if manual else leaf)
@@ -613,6 +625,7 @@ def public_settings() -> dict:
         "queue": cfg.get("queue", {}),
         "controlnet": cfg.get("controlnet", {}),
         "hands": cfg.get("hands", {}),
+        "autofix": autofix.settings(cfg),
         "loras": {k: v for k, v in cfg.get("loras", {}).items() if k != "civitai_api_key"},
         # Keys never leave the server; Settings only learns whether and where each is set.
         "api_keys": keys.status(),
@@ -673,10 +686,12 @@ class Handler(BaseHTTPRequestHandler):
                 # The URL carries the image's mtime, so the browser can keep it.
                 return self.send_file(thumb, thumbs.cache_dir(ROOT), cache_seconds=30 * 86400)
             if path.startswith("/files/"):
-                rel = path[len("/files/"):]
-                if not rel.startswith(("jobs/", "runs/", "cache/lora_images/", "cache/reruns/", "poses/")):
+                # Checked after resolving: "runs/../config.json" starts with "runs/" too.
+                target = (ROOT / path[len("/files/"):]).resolve()
+                base = next((b for b in (ROOT / d for d in FILE_DIRS) if target.is_relative_to(b.resolve())), None)
+                if base is None:
                     return self.send_json({"error": "forbidden"}, 403)
-                return self.send_file(ROOT / rel, ROOT)
+                return self.send_file(target, base)
             if path.startswith("/library/"):
                 return self.send_file(library_root() / path[len("/library/"):], library_root())
             if path == "/api/state":
@@ -685,6 +700,7 @@ class Handler(BaseHTTPRequestHandler):
                     "queue": [job_info(f, "pending") for f in queue.pending()],
                     "runs": runs_list(),
                     "bin": bin_info(),
+                    "generations": generate_mod.queue_status(),
                 })
             if path == "/api/status":
                 return self.send_json(service_status())
@@ -730,7 +746,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_file(source, catalog_root())
             if path == "/api/generate/estimate":
                 est = generate_mod.estimate(ROOT)
-                est["comfyui"] = comfy_launcher(load_config()).status()["state"]
+                cfg = load_config()
+                est["comfyui"] = comfy_launcher(cfg).status()["state"]
+                est["autofix"] = autofix.settings(cfg)
                 return self.send_json(est)
             if path == "/api/generate/status":
                 from .generate import status as gen_status
@@ -791,22 +809,31 @@ class Handler(BaseHTTPRequestHandler):
                     import io
                     from PIL import Image
                     reference = Image.open(io.BytesIO(base64.b64decode(data["image_b64"].split(",", 1)[-1])))
+                keep = {l.get("name") for l in data.get("keep") or []}
                 out = suggest_loras(make_backend(cfg["judge"]), cards,
                                     data.get("positive", ""), data.get("negative", ""),
                                     data.get("description", ""), reference,
                                     int(data.get("max") or cfg.get("loras", {}).get("max_loras", 3)),
-                                    cfg["judge"].get("image_max_side", 512))
+                                    cfg["judge"].get("image_max_side", 512),
+                                    [c for c in cards if c["comfy_name"] in keep])
                 return self.send_json(out)
             if path == "/api/generate":
-                from .generate import start as gen_start
-                cfg = load_config()
-                if cfg.get("comfyui", {}).get("autostart", True):
-                    launcher = comfy_launcher(cfg)
-                    if not launcher.ensure_running(lambda m: None):
-                        return self.send_json({"error": f"ComfyUI is not running: {launcher.message}"}, 503)
+                # Queued, not run here: the page is free again at once (ComfyUI is started,
+                # if needed, when the task's turn comes).
                 if data.get("rerun"):  # a History entry, reproduced exactly and not saved again
-                    data = generate_mod.rerun_request(ROOT, data["rerun"])
-                return self.send_json({"id": gen_start(cfg, data, ROOT, rel_url)})
+                    data = {**generate_mod.rerun_request(ROOT, data["rerun"]), "estimate": data.get("estimate")}
+                gen_id = generate_mod.start(data)
+                return self.send_json({"id": gen_id, **(generate_mod.status(gen_id) or {})})
+            if path == "/api/autofix":
+                gen_id = generate_mod.start_autofix(data["run"], data.get("images") or [])
+                return self.send_json({"id": gen_id})
+            if path == "/api/generations/remove":
+                if generate_mod.status(data["id"]) is None:
+                    return self.send_json({"error": "that task is no longer in the queue"}, 404)
+                return self.send_json(generate_mod.remove(data["id"]))
+            if path == "/api/generations/clear":
+                generate_mod.clear_finished()
+                return self.send_json({"ok": True})
             if path == "/api/prompt/preview":
                 # A description or a reference image is enough: with only an image the
                 # prompter describes what it sees.
@@ -846,6 +873,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/comfyui/stop":
                 if runner.running:
                     return self.send_json({"error": "the queue is running; stop it first"}, 409)
+                if any(g["status"] == "running" for g in generate_mod.queue_status()):
+                    return self.send_json({"error": "a generation is rendering; cancel it on the Queue tab first"}, 409)
                 return self.send_json({"stopped": comfy_launcher(load_config()).stop()})
             if path == "/api/loras/refresh":
                 return self.send_json({"started": refresh_loras()})
@@ -866,6 +895,54 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"missing field {e}"}, 400)
         except Exception as e:
             return self.send_json({"error": str(e)}, 500)
+
+
+def prepare_comfy() -> None:
+    """Make sure ComfyUI answers before a queued generation runs (starting it if allowed)."""
+    cfg = load_config()
+    launcher = comfy_launcher(cfg)
+    if cfg.get("comfyui", {}).get("autostart", True):
+        if not launcher.ensure_running(lambda m: None):
+            raise RuntimeError(f"ComfyUI is not running: {launcher.message}")
+    elif not launcher.reachable():
+        raise RuntimeError("ComfyUI is not running (and starting it is switched off in Settings)")
+
+
+def fix_target(run: str) -> dict:
+    """What auto-fix needs for a History entry: a Home generation (manual/<run>) or an
+    automatic run (its best.png, with the settings that made it)."""
+    if run.startswith("manual/"):
+        return generate_mod.manual_fix_target(ROOT, run)
+    from .params import GenParams
+    d = (ROOT / "runs" / run).resolve()
+    if d.parent != (ROOT / "runs").resolve() or not (d / "best.png").exists():
+        raise FileNotFoundError(run)
+    summary = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    info = json.loads((d / "run.json").read_text(encoding="utf-8")) if (d / "run.json").exists() else {}
+    rep = reproduce_info(d, summary, info)
+    if not rep or not rep.get("params"):
+        raise RuntimeError("this run has no recorded settings to repaint with")
+    p = dict(rep["params"])
+    loras = [(l["name"], l["strength"]) for l in rep.get("loras") or []] or p.get("loras") or []
+    params = GenParams(**{**p, "loras": tuple(tuple(x) for x in loras)})
+    return {"dir": d, "params": params, "positive": rep.get("rendered_positive") or p["positive"],
+            "checkpoint": rep.get("checkpoint"), "images": ["best.png"]}
+
+
+def autofix_view(d: Path) -> dict:
+    """A run's auto-fix results for History: {source image: {state, fixed URL, ...}}."""
+    out = {}
+    for name, r in autofix.load_results(d).items():
+        out[name] = {"state": r.get("state"), "error": r.get("error"),
+                     "fixed_url": rel_url(d / r["image"]) if r.get("image") and (d / r["image"]).exists() else None,
+                     "fixed_thumb": thumbs.url(ROOT, d / r["image"]) if r.get("image") and (d / r["image"]).exists() else None,
+                     "issues_found": r.get("issues_found") or [], "issues_left": r.get("issues_left") or [],
+                     "rounds": r.get("rounds") or [], "finished": r.get("finished")}
+    return out
+
+
+generate_mod.configure(root=ROOT, rel_url=rel_url, load_config=load_config, prepare=prepare_comfy,
+                       fix_target=fix_target)
 
 
 def serve(open_browser: bool = True) -> None:

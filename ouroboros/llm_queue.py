@@ -26,6 +26,11 @@ def set_label(label: str | None) -> None:
     _local.label = label
 
 
+def current_label() -> str | None:
+    """The current thread's label, to hand on to threads it starts."""
+    return getattr(_local, "label", None)
+
+
 class LLMGate:
     def __init__(self, capacity: int = 1):
         self._cv = threading.Condition()

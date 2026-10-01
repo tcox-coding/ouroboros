@@ -44,7 +44,8 @@ def get(root: Path, rel: str) -> Path | None:
         return None
     if not source.is_file():
         return None
-    return _make(source, cache_dir(root) / Path(rel).with_suffix(".jpg"))
+    # Named after the resolved path, not `rel`: "runs/../../x.png" must not write outside the cache.
+    return _make(source, cache_dir(root) / source.relative_to(root.resolve()).with_suffix(".jpg"))
 
 
 def lora_example(root: Path, source: Path, lora_id: str) -> Path | None:

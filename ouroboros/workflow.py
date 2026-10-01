@@ -40,6 +40,33 @@ def _local_sep(value):
     return _EMBEDDING.sub(lambda m: m.group(0).replace("\\", "/"), value)
 
 
+# Added to every render's negative prompt. Many LoRAs were trained on booru-tagged data
+# that includes images of minors (the LoRA classifier finds such tags in a large share of
+# a typical library), and LoRAs are now chosen by a model; this keeps every render adult.
+# The same list the LoRA classifier uses for its own test renders.
+SAFETY_NEGATIVE = ["child", "loli", "shota", "toddler", "kid"]
+
+
+def with_safety_negative(negative: str) -> str:
+    from .params import norm_tag, split_tags
+    have = {norm_tag(t) for t in split_tags(negative or "")}
+    missing = [t for t in SAFETY_NEGATIVE if t not in have]
+    if not missing:
+        return negative
+    return (negative.rstrip().rstrip(",") + ", " if (negative or "").strip() else "") + ", ".join(missing)
+
+
+def _lora_root() -> Path | None:
+    """The classified library's loras folder (loras.catalog_dir/loras), if there is one."""
+    try:
+        from .runner import load_config
+        d = (load_config().get("loras") or {}).get("catalog_dir")
+        root = Path(d).expanduser() / "loras" if d else None
+        return root if root and root.is_dir() else None
+    except Exception:
+        return None
+
+
 ROLES = {"positive", "negative", "seed", "steps", "cfg", "sampler_name", "scheduler", "denoise",
          "image", "use_reference", "masked", "batch_size", "checkpoint", "width", "height"}
 
@@ -113,7 +140,7 @@ class Workflows:
         graph = copy.deepcopy(self.graph)
         values = {
             "positive": p.positive if positive is None else positive,
-            "negative": p.negative,
+            "negative": with_safety_negative(p.negative),
             "seed": p.seed,
             "steps": p.steps,
             "cfg": p.cfg,
@@ -137,9 +164,13 @@ class Workflows:
                 del inputs[k]
             for i, (name, strength) in enumerate(p.loras, 1):
                 inputs[f"lora_{i}"] = {"on": True, "lora": name, "strength": strength}
+        root = _lora_root()
         for node in graph.values():
             for k, v in node.get("inputs", {}).items():
                 if isinstance(v, dict) and "lora" in v:
+                    if root is not None and v["lora"]:  # where the file is now (see lora_catalog.current_name)
+                        from .lora_catalog import current_name
+                        v["lora"] = current_name(v["lora"], root)
                     v["lora"] = _local_sep(v["lora"])
                 else:
                     node["inputs"][k] = _local_sep(v)

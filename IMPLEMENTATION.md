@@ -97,7 +97,8 @@ ouroboros/
     prompter.py     Writes the starting prompt from a description (or merges it into yours)
     backends.py     Judge backends: DeepInfraBackend and OpenAIBackend (hosted), OllamaBackend (LAN)
     generate.py     One-off generation for the Home tab: the loop's renderer, driven by hand;
-                    its time estimate and History reruns
+                    the generation queue, its time estimate and History reruns
+    autofix.py      Auto-fix: inspect an image for flaws, repaint them, keep what a review approves
     keys.py         API keys for DeepInfra, OpenAI and Civitai (Settings -> API keys)
     thumbs.py       Cached JPEG thumbnails for History and the LoRA example renders
     lora_catalog.py The classified LoRA library (lora-classifier output) as cards for the picker
@@ -204,7 +205,9 @@ written from the image.
 
 **References.** One reference supplies the character, style *and* pose. Tick **Separate pose
 reference** and it splits in two: one image for the character and drawing style, another (or a
-saved pose from the library) for where the limbs go.
+saved pose from the library) for where the limbs go. As in a job, img2img starts from the
+reference centre-cropped to the output size (transparency flattened onto white); **auto** size
+follows the reference's shape, or with no reference, the pose's.
 
 **LoRAs.** The picker lists every classified LoRA with its Civitai showcase image, name, tags and
 a one-line description of what it does. Each pick gets a strength slider bounded by the range that
@@ -234,6 +237,42 @@ picking from 523 finds `90s_pony` and `90s4n1m3XLP`, which is what the reference
 The two stages are unchanged: a text shortlist over everything (one compact line each, ~30 tokens,
 so the whole catalog fits), then a visual comparison of the shortlist's example renders against the
 reference. `loras.max_candidates` now only caps the detailed path used when no catalog is present.
+
+### LoRA briefs
+A title ("Jab Style Illustrious & Flux & Pony & 1.5") tells a model nothing about what a LoRA
+does. The classifier writes a long description of each LoRA it finished
+(`catalog/descriptions/<category>/<name>.json`: summary, style metrics, compatible subjects and
+framings, triggers, the weight curve, strengths, weaknesses, usage tips). `lora_briefs.py` has the
+configured judge model condense each one into a brief of fixed fields, shown as one line of
+about 60-70 words wherever a model chooses LoRAs (Home's *Also choose LoRAs*, the loop's
+shortlist and visual pick, the judge's LoRA menu):
+
+```
+[style] Semi-realistic painterly look; sculpted athletic-curvy adult female anatomy, glossy skin,
+cinematic light | look: glossy skin, specular highlights, soft diffuse light, desaturated warm
+neutrals | best for: solo adult women, full body to close-up | weak: same face every subject,
+poor multi-character | trigger: Jabstyle | weight 0.5-1.2, usually 0.9 (recognizable at 0.6,
+full look 0.9-1.0, overbaked past 1.2) | suggestive
+```
+
+Run it once, and again when the classifier adds LoRAs; it only writes missing or changed briefs
+(about $0.0003 each with DeepSeek V4.1 Flash):
+
+```
+.venv/bin/python -m ouroboros briefs            # missing or changed ones
+.venv/bin/python -m ouroboros briefs --force    # all of them
+```
+
+`--only TEXT` limits it to categories or names containing TEXT, `--limit N` to N briefs. They're
+cached in `cache/lora_briefs.json`. LoRAs without a brief keep the old one-line card.
+
+Only LoRAs the classifier finished are described or offered. Those it flagged (the
+`caution loras` folder: training tags, example prompts or its own age screening pointing to
+minors) are never used. A brief also records whether the description shows the LoRA is made to
+depict minors; one that is is left out of every menu. Separately, every render's negative prompt
+includes `child, loli, shota, toddler, kid` (`workflow.SAFETY_NEGATIVE`), the same list the
+classifier uses for its own test renders, since much of a typical library was trained on
+booru-tagged data that includes such images.
 
 ### Carrying a character across a pose (IP-Adapter)
 A ControlNet steers the *shape* of an image. An IP-Adapter steers what the subject *looks like*, by
@@ -443,16 +482,50 @@ Civitai*; cached in `cache/`, so jobs never wait on the network):
    `pick_visual_candidates`). It picks up to `max_loras` (3) with strengths, plus
    alternatives. About 7.7K tokens.
 
+Picking none is a valid answer, and a render without LoRAs is always part of round 1.
+
 Round 1 then renders the picked set, your workflow's own LoRA set (the baseline the picks must
-beat), and sets with one alternative swapped in, all on the
-**same seed** (`loras.sweep`), so the judge compares LoRAs rather than seeds. After that,
-the judge's edits may switch between the picked, alternative and workflow LoRAs or change a
-strength ("only when style is the main problem, one change at a time").
+beat), the same render with no LoRAs, and sets with one alternative or other shortlisted LoRA
+swapped in, all on the **same seed** (`loras.sweep`), so the judge compares LoRAs rather than
+seeds. Round 1 has the largest batch (see *Batch size*), so that's where the most LoRA options
+are tried.
+
+After that, each edit changes **one axis** (`loop.enforce_focus`), so the next round shows what
+that change did. The judge says which with `focus`:
+- `prompt`: prompt and negative tags (with a mode/denoise change or masked repaint if needed);
+  the LoRAs and strengths stay.
+- `lora_weights`: only the strengths of the LoRAs in use; the prompt stays. The next round
+  renders the proposed strengths plus a sweep around them (±0.15, ±0.3, one LoRA at a time,
+  within each LoRA's working range from its brief) on one seed.
+- `loras`: a different set: swap one, add one, or none at all; the prompt stays. The next round
+  compares the new set, the one it replaces, no LoRAs, and further swaps, on one seed.
+- `settings`: mode, cfg, denoise, sampler, mask only.
+
+An edit that touches both is cut down to its focus. The judge is told LoRAs fix the look and the
+prompt fixes the content, and to try the other axis when one didn't help. Switching LoRAs
+(`loras`) is only allowed in the first `loop.lora_switch_rounds` rounds (3) while exploring; the
+judge's menu says whether switching is open, and a switch proposed later becomes a strength
+change. The judge's menu holds the picks, alternatives, the rest of the shortlist and the
+workflow's LoRAs, each with its brief.
+
+### Batch size
+Round 1 renders `loop.batch_start` candidates (12, at most 16); later rounds fewer, down to
+`loop.batch_end` (3). The batch follows whichever is furthest along: rounds done (each 30%
+closer), the phase (refine is 60% of the way, repair all of it), or the score's progress from
+round 1 toward the threshold. With the defaults and no other progress: 12, 9, 7, 6, 5, 5, 4...
+A job with its own *Fixed batch size* (`candidates_per_round`) keeps that.
+
+Every candidate is judged in its own call, and a round's calls now run side by side up to
+`queue.llm_parallel`, so a 12-image round takes about three call-lengths with 4 at once, not
+twelve. With the local pre-filter installed (torch, torchvision, transformers), only the top
+`send_top_k` go to the judge, except in rounds that compare LoRA sets or strengths.
 
 **Trigger words:** each active LoRA's main trigger word (the first listed) is added to
-the prompt at render time, and a switched-off LoRA's main trigger is removed. Some LoRAs
-list many (Melkor lists character names, princess_xl every princess), so only the main
-one is automatic. The prompt writer sees them all, plus each active LoRA's example
+the prompt at render time. A switched-off LoRA's trigger words are removed only when they
+are made-up tokens no other LoRA lists (`p0seA`, `RSV1.2`, `melkor_style`, `PuffyNips`):
+many LoRAs list ordinary tags as triggers (`1girl`, `Kiss`, `69`, `full body`), and those
+stay, as do your own words. Some LoRAs list many (Melkor lists character names,
+princess_xl every princess), so only the main one is automatic. The prompt writer sees them all, plus each active LoRA's example
 prompt, and uses the relevant ones. LoRA picks, reasons and alternatives are on the Run
 tab and in History.
 
@@ -512,6 +585,72 @@ same check runs when the judge adds a tag mid-run. The prompt is written when th
 starts, saved to `runs/<run>/prompt.json`, and shown on the Run tab with Copy buttons.
 **Preview AI prompt** in the Add a job form shows it beforehand, and **Use these as the
 prompt** copies it into the prompt fields.
+
+On the Home tab, **Write prompts** only writes prompts. Any LoRAs already selected (picked by
+hand in the browser, or earlier by the LLM) are passed to the writer with what each does,
+its trigger words and an example prompt, so the prompt includes the triggers and suits the
+LoRA's style, character, pose or concept. Ticking **Also choose LoRAs** first has the LLM pick
+LoRAs from the whole catalog: the selected ones stay, count toward `loras.max_loras`, and
+are shown to it so it adds only what they lack and nothing that fights them (a second style
+or pose). The prompts are then written for the full set. A generation whose prompt the LLM
+writes at render time (description only) is written for its selected LoRAs the same way.
+
+### The generation queue
+Home generations, and auto-fixes started from History, go into one queue (`generate.py`):
+one worker, oldest first, so the Home tab is free again as soon as Generate is pressed and
+more can be added while one renders. ComfyUI is started, if needed, when a task's turn comes.
+The Result panel follows the queue: the running task's stage and progress (against the time
+estimate it was queued with), how many wait behind it, and the images of whatever finished
+last. The time estimate on Home adds what's still queued ahead.
+
+The Queue tab lists the generations (running, waiting with their place in line, and the
+last dozen finished) above the automatic-run jobs. **Remove** (two clicks) drops a waiting
+task; on the running one it's **Cancel**, which also takes its prompt out of ComfyUI's queue
+or interrupts the render, and a cancelled generation that produced no image leaves no
+History entry. The queue lives in memory: tasks still waiting when the server stops are not
+kept.
+
+### Auto-fix
+The likeness loop compares an image with a reference. Auto-fix (`autofix.py`) looks at an
+image on its own, as a person would before keeping it:
+
+1. **Inspect.** The judge model sees the image (`autofix.image_max_side`, 1024 px by default,
+   large enough to count fingers) and the prompt it was made from, and lists up to six flaws:
+   what's wrong, the region it's in ("left hand", "waist"), its kind, a severity (1 barely
+   noticeable, 2 noticeable, 3 glaring), a repair method, and prompt tags for how the region
+   should look and what to avoid. It's told not to report anything the prompt asks for (an
+   intentionally unusual pose, a stylised build).
+2. **Repair** the worst `autofix.fixes_per_round` flaws from `autofix.min_severity` up, one
+   after another, each starting from the previous result: `inpaint` finds the region with
+   CLIPSeg and repaints only it through the workflow's masked path (`autofix.denoise`, +0.1
+   for glaring flaws); `hands` uses the hand refiner (one pass per round repaints every
+   hand, at the same strength rule) and falls back to a masked repaint of the hand when it
+   finds no skeleton or failed before; `img2img` is a light whole-image pass for problems
+   spread everywhere.
+3. **Review.** The model sees BEFORE and AFTER, says which targeted flaws are fixed, what
+   the repair broke, whether AFTER is better, and lists what's still wrong. The round is kept
+   only if the model says it's better *and* the remaining flaws weigh less (summed severity)
+   than before: asked "better?", a model says yes too easily, even while describing new
+   damage. Flaws the round didn't touch are carried forward when the new list forgets them.
+   A discarded repair is reported to the next round so it isn't tried again the same way.
+
+Up to `autofix.max_rounds` rounds; each after the first costs one LLM call plus the renders.
+In testing, a waving character with six fingers on both hands came out with five on each
+after one kept round; rounds that made a hand worse were thrown away.
+
+Where it runs:
+- **Home:** *Auto-fix each image afterwards* (under Generation) fixes every image of the batch
+  as part of the queued task. The Result panel shows the fixed image with a link to the
+  original.
+- **Automatic runs:** `loop.auto_fix` (Settings, or per job under *Run automatically*) fixes
+  the final image after the hand refiner. The fix must keep the likeness: it replaces
+  `best.png` (the original is kept as `best_before_autofix.png`) only if a fresh look scores
+  it at most `autofix.keep_margin` points below the original.
+- **History:** an **Auto-fix** button on every image (and *Auto-fix all*) queues it. The result
+  sits next to the original as `<name>_fixed.png`; nothing is replaced. The View dialog shows
+  both side by side with what was found, each round, and what's left.
+
+Every step's files are in the run folder's `autofix/`, and the record in `autofix.json`.
 
 ### Pose ControlNet and the pose library
 Uses the xinsir ControlNet Union SDXL "promax" model (`models/controlnet/xinsir_union_sdxl_promax.safetensors`)
@@ -786,9 +925,11 @@ Settings are saved to `config.json`, which overrides `config.example.json`.
   pre-filter), the judge's diagnosis, the edit it chose next, whether a pass was
   confirmed, and the judge's prompt size. **Stop after round** finishes the current
   round and leaves the job in the queue.
-- **Home:** one-off generations with your own settings. The time estimate next to
-  Generate comes from how fast your last renders ran. **Write prompts and choose LoRAs**
-  turns a description into prompts and has the LLM pick LoRAs for them.
+- **Home:** one-off generations with your own settings, added to the generation queue (see
+  *The generation queue*). The time estimate next to Generate comes from how fast your last
+  renders ran. **Write prompts** turns a description into prompts written for the selected
+  LoRAs; tick **Also choose LoRAs** to have the LLM pick some first. *Auto-fix each image
+  afterwards* repairs flaws in the results.
 - **History:** every finished automatic run and every Home generation (a batch is one
   entry), newest first, as cached thumbnails. For a run, **View rounds** replays it and
   **Run again** re-queues the job. For a Home generation, **View** shows its images,

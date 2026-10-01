@@ -19,8 +19,9 @@ LoRA, one example image made with it (from Civitai), its trigger words, its usua
 weight, and how it scored in earlier local tests (scores are 0-100 likeness to other
 references; style is 0-10).
 
-- Pick the LoRAs that together best reproduce the reference's style. Fewer is fine;
-  don't stack LoRAs that pull toward different looks.
+- Pick the LoRAs that together best reproduce the reference's style. Fewer is fine,
+  and none is the right answer when no LoRA fits: a render without LoRAs is always
+  tested alongside your picks. Don't stack LoRAs that pull toward different looks.
 - Strength: near the usual weight for one LoRA; lower (0.3-0.6 each) when combining.
 - Prefer LoRAs whose local results are good, but trust what you see over a few tests.
 - Also list a few alternatives worth testing against your picks.
@@ -138,6 +139,8 @@ def pick_loras(backend, library: LoraLibrary, reference: Path, goal: str, ckpt_b
 
 def _short_card(rec: dict) -> str:
     """One line per LoRA for the shortlist stage, when the whole catalog is on offer."""
+    if rec.get("brief"):
+        return f"{lora_stem(rec['name'])}: {rec['title'][:52]} {rec['brief']}"
     bits = [f"{lora_stem(rec['name'])}: {rec['title'][:52]}"]
     kind = " / ".join(x for x in (rec.get("type"), (rec.get("category") or "").split("/")[-1]) if x)
     if kind:
@@ -157,15 +160,18 @@ def contact_sheet_tiles(tiles: list[tuple[str, Path]], size: int):
 
 
 def prompt_notes(library: LoraLibrary, loras: tuple) -> str:
-    """For the prompt writer: each active managed LoRA's trigger words and how its
-    example prompts describe the style."""
+    """For the prompt writer: what each active managed LoRA does, its trigger words, and
+    how its example prompts describe the style."""
     index = library.index()
     lines = []
     for name, w in loras:
         rec = index.get(name)
         if not rec:
             continue
-        line = f"- a LoRA at strength {w:g}: trigger words: {', '.join(rec['trigger_words'][:6]) or 'none'}"
+        kind = f" ({rec['type']})" if rec.get("type") else ""
+        what = f" - {rec['description'][:160]}" if rec.get("description") else ""
+        line = (f"- {rec.get('title', lora_stem(name))[:60]}{kind} at strength {w:g}{what}; "
+                f"trigger words: {', '.join(rec['trigger_words'][:6]) or 'none'}")
         ex = next((e["prompt"] for e in rec["examples"] if e.get("prompt")), "")
         if ex:
             line += f"; an example prompt made with it: {ex[:260]}"
@@ -194,6 +200,8 @@ Reply with JSON only."""
 
 
 def _menu_line(n: int, e: dict) -> str:
+    if e.get("brief"):
+        return f"{n}. {e['title'][:58]}: {e['brief']}"
     bits = [f"{n}. {e['title'][:58]}"]
     kind = " / ".join(x for x in (e.get("type"), e.get("category", "").split("/")[-1]) if x)
     if kind:
@@ -207,16 +215,25 @@ def _menu_line(n: int, e: dict) -> str:
 
 def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str = "",
                   description: str = "", reference=None, max_loras: int = 3,
-                  max_side: int = 512) -> dict:
+                  max_side: int = 512, selected: list[dict] | None = None) -> dict:
     """Ask the model which of the installed LoRAs suit this prompt.
 
     One call with the whole menu: each LoRA is one line (~30 tokens), so ~500 of them
     cost well under a cent and sit inside a fraction of the model's window. The model
     answers with menu numbers rather than names, which keeps the schema small and makes
     a wrong answer easy to drop.
+
+    `selected` are LoRAs the person already picked: they stay, count toward max_loras,
+    aren't offered again, and the model is told not to add anything that fights them.
     """
-    if not cards:
-        return {"picks": [], "notes": "no LoRAs indexed"}
+    selected = selected or []
+    kept = {e.get("comfy_name") for e in selected}
+    cards = [e for e in cards if e.get("comfy_name") not in kept]
+    max_loras = max_loras - len(selected)
+    if not cards or max_loras <= 0:
+        return {"picks": [], "considered": len(cards), "cost_usd": 0.0,
+                "notes": "no LoRAs indexed" if not cards else
+                         f"{len(selected)} already selected, which is the limit; none added."}
     menu = "\n".join(_menu_line(i + 1, e) for i, e in enumerate(cards))
     wanted = ("WHAT THEY WANT TO MAKE\n"
               + "\n".join(x for x in (f"prompt: {positive.strip()}" if positive.strip() else "",
@@ -226,6 +243,11 @@ def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str 
     parts = [{"text": wanted}]
     if reference is not None:
         parts += [{"text": "REFERENCE IMAGE (match its style and subject):"}, {"image": reference}]
+    if selected:
+        parts.append({"text": "ALREADY SELECTED by the person (these stay; add only what they lack, and "
+                              "nothing that fights them, e.g. a second style or pose):\n"
+                              + "\n".join(f"- {e.get('title', '')[:58]} [{e.get('type', '')}] "
+                                           f"{(e.get('summary') or '')[:130]}" for e in selected)})
     parts += [{"text": f"AVAILABLE LORAS\n{menu}"},
               {"text": f"TASK: choose at most {max_loras} LoRAs from the menu that best serve this render, "
                        "by their numbers. Fewer is better. JSON only."}]
@@ -245,11 +267,12 @@ def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str 
         "required": ["picks", "notes"], "additionalProperties": False,
     }
     data, cost, _tokens = backend.complete(SUGGEST_INSTRUCTIONS, parts, schema, "lora_suggest", max_side)
-    picks = []
+    picks, seen = [], set()
     for p in data.get("picks") or []:
         i = int(p.get("n", 0)) - 1
-        if not (0 <= i < len(cards)):
-            continue  # a number it made up
+        if not (0 <= i < len(cards)) or i in seen or len(picks) >= max_loras:
+            continue  # a number it made up, one picked twice, or past the limit
+        seen.add(i)
         e = cards[i]
         w = e.get("weight") or {}
         strength = float(p.get("strength", w.get("default", 0.8)))
