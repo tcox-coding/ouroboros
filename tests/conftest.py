@@ -27,3 +27,55 @@ def library():
         "Pony\\concepts\\a\\poseA.safetensors": {"trigger_words": ["1girl", "standing", "p0seA"], "title": "Pose A"},
         "Pony\\concepts\\b\\poseB.safetensors": {"trigger_words": ["1girl", "full body"], "title": "Standing"},
     })
+
+
+class FakeComfy:
+    """Records uploads and graphs; every render returns one small PNG."""
+    uploads: list = []
+    graphs: list = []
+
+    def __init__(self, url):
+        pass
+
+    def upload_image(self, path, subfolder="x"):
+        from PIL import Image
+        with Image.open(path) as im:
+            FakeComfy.uploads.append((path.name, im.size, im.mode))
+        return f"{subfolder}/{path.name}"
+
+    def queue(self, graph):
+        FakeComfy.graphs.append(graph)
+        return "pid"
+
+    def wait(self, ids, should_stop=None):
+        return {"pid": {"outputs": {}}}
+
+    def fetch_images(self, hist, node):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(buf, "PNG")
+        return [buf.getvalue()]
+
+
+@pytest.fixture
+def home_run(tmp_path, monkeypatch):
+    """_run against the example workflow and a fake ComfyUI."""
+    import shutil
+    import ouroboros.generate as gen
+    import ouroboros.workflow as wf
+    src = ROOT / "workflows"
+    (tmp_path / "workflows").mkdir()
+    for f in ("example_workflow.json", "nodes.example.json"):
+        shutil.copy(src / f, tmp_path / "workflows" / f)
+    monkeypatch.setattr(wf, "_lora_root", lambda: None)
+    monkeypatch.setattr(gen, "ComfyClient", FakeComfy)
+    FakeComfy.uploads, FakeComfy.graphs = [], []
+
+    def run(**req):
+        gen.JOBS["h"] = {"id": "h"}
+        gen._run("h", {"comfy_url": "x", "judge": {}}, {"positive": "1girl", "steps": 20, **req}, tmp_path,
+                 lambda p: str(p), lambda: False)
+        assert gen.JOBS["h"]["status"] == "done", gen.JOBS["h"].get("error")
+        return gen.JOBS["h"]
+    return run

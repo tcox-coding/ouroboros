@@ -176,8 +176,9 @@ class Workflows:
                     node["inputs"][k] = _local_sep(v)
         if control:
             self._add_controlnet(graph, control, masked)
-        if ipadapter:
-            self._add_ipadapter(graph, ipadapter)
+        # One IP-Adapter (a dict) or several (a list: e.g. the subject's, then the style's).
+        for n, ip in enumerate(ipadapter if isinstance(ipadapter, list) else [ipadapter] if ipadapter else []):
+            self._add_ipadapter(graph, ip, n)
         return graph
 
     def _add_controlnet(self, graph: dict, c: dict, masked: bool) -> None:
@@ -213,7 +214,7 @@ class Workflows:
         ks["positive"], ks["negative"] = [apply, 0], [apply, 1]
 
 
-    def _add_ipadapter(self, graph: dict, ip: dict) -> None:
+    def _add_ipadapter(self, graph: dict, ip: dict, n: int = 0) -> None:
         """Insert an IP-Adapter between the model and the sampler:
         LoadImage(style/character reference) -> IPAdapterUnifiedLoader -> IPAdapterAdvanced
         -> KSampler.model.
@@ -225,14 +226,20 @@ class Workflows:
 
         ip: {"image" (ComfyUI name), "preset", "weight", "weight_type", "start", "end"}.
         Needs ComfyUI_IPAdapter_plus and its models installed.
+
+        Several are chained (n = 0, 1, ...): each applies to the model the previous one
+        produced, and a later one with the same preset reuses the first one's loaded
+        IP-Adapter and CLIP vision models instead of loading them again.
         """
         sampler = self.spec["roles"]["seed"][0]
         ks = graph[sampler]["inputs"]
-        ids = iter(f"ip{i}" for i in range(1, 100))
-        load, loader, apply = next(ids), next(ids), next(ids)
+        load, loader, apply = f"ip{3 * n + 1}", f"ip{3 * n + 2}", f"ip{3 * n + 3}"
+        preset = ip.get("preset", "PLUS (high strength)")
         graph[load] = {"class_type": "LoadImage", "inputs": {"image": ip["image"]}}
-        graph[loader] = {"class_type": "IPAdapterUnifiedLoader",
-                         "inputs": {"model": ks["model"], "preset": ip.get("preset", "PLUS (high strength)")}}
+        graph[loader] = {"class_type": "IPAdapterUnifiedLoader", "inputs": {"model": ks["model"], "preset": preset}}
+        first = "ip2"
+        if n and graph.get(first, {}).get("inputs", {}).get("preset") == preset:
+            graph[loader]["inputs"]["ipadapter"] = [first, 1]
         graph[apply] = {"class_type": "IPAdapterAdvanced", "inputs": {
             "model": [loader, 0], "ipadapter": [loader, 1], "image": [load, 0],
             "weight": float(ip.get("weight", 0.8)), "weight_type": ip.get("weight_type", "linear"),

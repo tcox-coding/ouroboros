@@ -85,8 +85,8 @@
   .home-grid textarea:disabled, .home-grid input:disabled { opacity: .5; cursor: not-allowed; }
   .field-label { font-size: 12px; color: var(--muted); display: block; margin: 10px 0 4px; }
   .field-label:first-child { margin-top: 0; }
-  .refs { display: grid; grid-template-columns: 1fr; gap: 10px; }
-  .refs.two { grid-template-columns: 1fr 1fr; }
+  .target-panel h2 { margin-bottom: 8px; }
+  .target-extra { margin-top: 10px; }
   .ref-slot { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; text-align: center; }
   .ref-slot img { width: 100%; max-height: 190px; object-fit: contain; border-radius: 6px; background: #0b0c0f; }
   .ref-slot .drop { color: var(--muted); font-size: 12px; padding: 22px 6px; cursor: pointer; display: block; }
@@ -183,6 +183,14 @@
   .pose-opt .ph { display: flex; align-items: center; justify-content: center; color: #aaa; background: var(--panel); }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
   .cards > .empty { grid-column: 1 / -1; }
+  .pose-pick { display: inline-flex; align-items: center; gap: 8px; min-width: 220px; text-align: left; }
+  .pose-pick img { width: 34px; height: 34px; object-fit: contain; background: #000; border-radius: 4px; }
+  .pose-grid .card { cursor: pointer; }
+  .pose-grid .card.sel { outline: 2px solid var(--accent); }
+  .pose-grid .card .pair { display: flex; gap: 6px; }
+  .pose-grid .card .pair img { width: 50%; aspect-ratio: 3 / 4; object-fit: contain; background: #000; border-radius: 6px; }
+  .pose-grid .card img.one { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; background: #000; border-radius: 6px; }
+  .pose-grid .card.special { justify-content: center; text-align: center; min-height: 120px; }
   .card { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
   .card .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .status { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
@@ -275,6 +283,8 @@
     <button data-tab="history">History</button>
     <button data-tab="loras">LoRAs</button>
     <button data-tab="poses">Poses</button>
+    <button data-tab="styles">Styles</button>
+    <button data-tab="characters">Characters</button>
     <button data-tab="settings">Settings</button>
   </nav>
   <div class="spacer"></div>
@@ -307,48 +317,79 @@
   <section class="tab active" id="tab-home">
     <div class="home-grid">
       <div>
-        <div class="panel">
-          <h2>Reference <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
-          <label class="check"><input type="checkbox" id="two-refs"> Separate pose reference</label>
-          <div class="refs" id="refs">
+        <div class="panel target-panel" id="tp-style">
+          <h2>Style <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
+          <textarea id="style-text" rows="2" placeholder="the art style in words, e.g. 90s anime cel shading, thick ink outlines, soft painterly light"></textarea>
+          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="style-use" data-role="style"> Use a saved style, an image, or let the AI pick</label>
+          <div class="target-extra hide" id="style-extra">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <button type="button" class="btn pose-pick" data-ref-for="style" title="Choose a saved style, or let the AI pick one"></button>
+              <select id="style-library" hidden><option value="">none</option></select>
+            </div>
             <div class="ref-slot" id="slot-style">
-              <div class="field-label" id="label-style">Style &amp; character</div>
+              <div class="field-label" style="margin-top:0">or an image of the style</div>
               <label class="drop">click to choose an image<input type="file" accept="image/*" hidden data-ref="style"></label>
               <img hidden data-preview="style">
               <button type="button" class="btn small" hidden data-clear="style" style="margin-top:6px">Remove</button>
             </div>
-            <div class="ref-slot hide" id="slot-pose">
-              <div class="field-label">Pose</div>
-              <label class="field-label" style="margin-top:0">or a saved pose
-                <select id="pose-library" class="pose-select"><option value="">upload an image instead</option></select>
+            <div class="params" style="margin-top:10px">
+              <label class="check" style="grid-column:1/-1;margin:0" title="An IP-Adapter in style-transfer mode carries the image's look (line work, shading, palette), not its content">
+                <input type="checkbox" id="style-ip" checked> IP-Adapter: carry the look</label>
+              <label>Weight <input id="style-ip-weight" type="number" step="0.05" min="0" max="1.5" value="0.5"></label>
+            </div>
+          </div>
+        </div>
+        <div class="panel target-panel" id="tp-subject">
+          <h2>Subject <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
+          <textarea id="subject-text" rows="2" placeholder="the character in words, e.g. red-haired knight in silver armour, green eyes, scar on the cheek"></textarea>
+          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="subject-use" data-role="subject"> Use a saved character, an image, or let the AI pick</label>
+          <div class="target-extra hide" id="subject-extra">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <button type="button" class="btn pose-pick" data-ref-for="subject" title="Choose a saved character, or let the AI pick one"></button>
+              <select id="subject-library" hidden><option value="">none</option></select>
+            </div>
+            <div class="ref-slot" id="slot-subject">
+              <div class="field-label" style="margin-top:0">or an image of the character</div>
+              <label class="drop">click to choose an image<input type="file" accept="image/*" hidden data-ref="subject"></label>
+              <img hidden data-preview="subject">
+              <button type="button" class="btn small" hidden data-clear="subject" style="margin-top:6px">Remove</button>
+            </div>
+            <div class="params" style="margin-top:10px">
+              <label class="check" style="grid-column:1/-1;margin:0" title="An IP-Adapter carries the character (face, hair, outfit) from the image; above ~0.7 with the PLUS preset this checkpoint burns out">
+                <input type="checkbox" id="subject-ip" checked> IP-Adapter: carry the character</label>
+              <label>Weight <input id="subject-ip-weight" type="number" step="0.05" min="0" max="1.5" value="0.6"></label>
+              <label>IP preset
+                <select id="ip-preset">
+                  <option>PLUS (high strength)</option><option>STANDARD (medium strength)</option>
+                  <option>PLUS FACE (portraits)</option>
+                </select>
               </label>
+            </div>
+          </div>
+        </div>
+        <div class="panel target-panel" id="tp-pose">
+          <h2>Pose <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
+          <textarea id="pose-text" rows="2" placeholder="the pose in words, e.g. kneeling, hands together, looking up at the viewer"></textarea>
+          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="pose-use" data-role="pose"> Use a saved pose, an image, or let the AI pick</label>
+          <div class="target-extra hide" id="pose-extra">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+              <button type="button" class="btn pose-pick" data-pose-for="pose-library" title="Choose a saved pose, or let the AI pick one"></button>
+              <select id="pose-library" hidden><option value="">none</option></select>
+            </div>
+            <div class="ref-slot" id="slot-pose">
+              <div class="field-label" style="margin-top:0">or an image with the pose</div>
               <label class="drop">click to choose an image<input type="file" accept="image/*" hidden data-ref="pose"></label>
               <img hidden data-preview="pose">
               <button type="button" class="btn small" hidden data-clear="pose" style="margin-top:6px">Remove</button>
             </div>
-          </div>
-          <div class="params" style="margin-top:12px">
-            <label style="grid-column:1/-1"><input type="checkbox" id="use-ip" checked> IP-Adapter: carry the character from the style reference</label>
-            <label title="Above ~0.7 with the PLUS preset this checkpoint burns out: colours saturate and anatomy melts">IP weight
-              <input id="ip-weight" type="number" step="0.05" min="0" max="1.5" value="0.6"></label>
-            <label>IP preset
-              <select id="ip-preset">
-                <option>PLUS (high strength)</option><option>STANDARD (medium strength)</option>
-                <option>PLUS FACE (portraits)</option>
-              </select>
-            </label>
-            <label title="linear carries the whole character; style transfer keeps the look but lets the prompt set the layout">IP mode
-              <select id="ip-weight-type">
-                <option>linear</option><option>style transfer</option><option>style and composition</option>
-                <option>composition</option><option>strong style transfer</option>
-              </select>
-            </label>
-            <label style="grid-column:1/-1"><input type="checkbox" id="use-pose"> Pose ControlNet from the pose reference</label>
-            <label>Pose strength <input id="pose-strength" type="number" step="0.05" min="0" max="2" value="0.6"></label>
-            <label>Pose until <input id="pose-end" type="number" step="0.05" min="0" max="1" value="0.8"></label>
+            <div class="params" style="margin-top:10px">
+              <label class="check" style="grid-column:1/-1;margin:0" title="Impose the pose with a ControlNet: the saved pose if one is chosen, else the pose image, else the subject (or style) image">
+                <input type="checkbox" id="use-pose" checked> Pose ControlNet</label>
+              <label>Strength <input id="pose-strength" type="number" step="0.05" min="0" max="2" value="0.6"></label>
+              <label>Until <input id="pose-end" type="number" step="0.05" min="0" max="1" value="0.8"></label>
+            </div>
           </div>
         </div>
-
         <div class="panel">
           <h2>Prompt</h2>
           <label class="field-label" for="home-desc">Describe it &mdash; the LLM writes both prompts</label>
@@ -388,6 +429,12 @@
             <label style="align-self:end"><input type="checkbox" id="g-random" checked> random seed</label>
             <label>Sampler <select id="g-sampler"></select></label>
             <label>Scheduler <select id="g-scheduler"></select></label>
+            <div class="row" style="grid-column:1/-1;gap:8px;align-items:center">
+              <button class="btn small" id="g-suggest" title="Ask the LLM for steps, CFG, sampler and scheduler that suit the checkpoint, prompt and LoRAs, and fill them in here">Suggest settings</button>
+              <label class="check" style="margin:0" title="Right before rendering (after the prompts are written), the LLM chooses steps, CFG, sampler and scheduler; the values above are only the fallback. Also applies to Run automatically, where the loop keeps tuning them each round.">
+                <input type="checkbox" id="g-ai-settings"> AI chooses at generate time</label>
+            </div>
+            <p class="muted" id="g-settings-note" style="grid-column:1/-1;font-size:12px;margin:0"></p>
             <label>Size <select id="g-size">
               <option value="auto">auto (from reference)</option>
               <option>1024x1024</option><option>896x1152</option><option>832x1216</option>
@@ -403,6 +450,8 @@
           </div>
           <label class="check" style="margin-top:12px" title="After rendering, the LLM looks at each image for flaws (hands, anatomy, proportions, artifacts) and repairs them. The original is kept next to the fixed version.">
             <input type="checkbox" id="g-autofix"> Auto-fix each image afterwards</label>
+          <label class="check" title="After rendering (and auto-fix), each image is enlarged and redrawn lightly at the larger size with the same checkpoint, LoRAs and prompt, so it gains real detail. Saved next to the original. Scale, strength and upscale model are in Settings → Upscale.">
+            <input type="checkbox" id="g-upscale"> Upscale each image afterwards</label>
         </div>
 
         <div class="panel">
@@ -430,6 +479,10 @@
                 <select id="a-autofix"><option value="">settings</option><option value="true">yes</option><option value="false">no</option></select></label>
               <label>LoRA choice
                 <select id="a-lora-mode"><option value="">settings</option><option value="auto">AI picks</option><option value="workflow">workflow's own</option><option value="off">none</option></select></label>
+              <label title="The LLM chooses the starting steps, CFG, sampler and scheduler before round 1 (the judge tunes them afterwards either way)">Starting sampler settings
+                <select id="a-ai-settings"><option value="">settings (AI if ticked above)</option><option value="true">AI chooses</option><option value="false">as set above</option></select></label>
+              <label title="A larger, more detailed copy of the final image (best_upscaled.png); the judged image stays as it is">Upscale the result
+                <select id="a-upscale"><option value="">settings (yes if ticked above)</option><option value="true">yes</option><option value="false">no</option></select></label>
             </div>
           </details>
         </div>
@@ -501,17 +554,48 @@
     <div class="panel">
       <h2>Add a pose</h2>
       <form id="pose-form" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-        <label>Name <input name="name" placeholder="e.g. hands on hips"></label>
-        <label>Image with the pose <input type="file" name="image" accept="image/*" required></label>
-        <button class="btn primary" type="submit">Add pose</button>
+        <label title="Leave empty and the LLM names each pose after what it shows. With several images, a name you type is used for all of them, numbered (name, name_2, …).">Name <input name="name" placeholder="empty: the LLM names it"></label>
+        <label>Image(s) with the pose <input type="file" name="image" accept="image/*" multiple></label>
+        <label title="Every PNG, JPG or WebP in the folder (and its subfolders) becomes a pose">…or a folder <input type="file" name="folder" webkitdirectory multiple></label>
+        <button class="btn primary" type="submit" id="pose-add">Add pose</button>
         <span class="muted" id="pose-status"></span>
       </form>
-      <p class="muted" style="margin:8px 0 0">Any picture of a person in the pose you want: a screenshot, a photo, another character.
+      <p class="muted" style="margin:8px 0 0">Any picture of a person in the pose you want: a screenshot, a photo, another character. Pick several images, or a whole folder, to add them all at once.
         Its skeleton (body, hands and face points) is extracted with DWPose and saved; only the pose is used, never the
         character. The LLM also writes a short description of the pose for the prompt writer and the judge.
         Pick it in a job's <b>Pose</b> selector: the character comes from the reference, the pose from here.</p>
     </div>
     <div class="panel"><h2>Pose library</h2><div class="cards" id="pose-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-styles">
+    <div class="panel">
+      <h2>Add a style</h2>
+      <form class="ref-form" data-kind="style" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label title="Leave empty and the LLM names each style after what it shows. With several images, a name you type is used for all of them, numbered (name, name_2, …).">Name <input name="name" placeholder="empty: the LLM names it"></label>
+        <label>Image(s) in the style <input type="file" name="image" accept="image/*" multiple></label>
+        <label title="Every PNG, JPG or WebP in the folder (and its subfolders) becomes a style">…or a folder <input type="file" name="folder" webkitdirectory multiple></label>
+        <button class="btn primary" type="submit">Add style</button>
+        <span class="muted ref-status"></span>
+      </form>
+      <p class="muted" style="margin:8px 0 0">Any picture drawn in the look you want. The LLM writes its style tags (line work, shading, palette, medium) and, unless you name it, a name. Pick it in Home's <b>Style</b> panel (or let the AI pick one): its image drives a style-transfer IP-Adapter and its tags the prompt; the judge scores style against it.</p>
+    </div>
+    <div class="panel"><h2>Style library</h2><div class="cards" id="style-list"></div></div>
+  </section>
+
+  <section class="tab" id="tab-characters">
+    <div class="panel">
+      <h2>Add a character</h2>
+      <form class="ref-form" data-kind="character" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label title="Leave empty and the LLM names each character after what it shows. With several images, a name you type is used for all of them, numbered (name, name_2, …).">Name <input name="name" placeholder="empty: the LLM names it"></label>
+        <label>Image(s) of the character <input type="file" name="image" accept="image/*" multiple></label>
+        <label title="Every PNG, JPG or WebP in the folder (and its subfolders) becomes a character">…or a folder <input type="file" name="folder" webkitdirectory multiple></label>
+        <button class="btn primary" type="submit">Add character</button>
+        <span class="muted ref-status"></span>
+      </form>
+      <p class="muted" style="margin:8px 0 0">A clear picture of the character, ideally full body. The LLM writes the character's tags (hair, eyes, outfit, colours) and, unless you name it, a name. Pick it in Home's <b>Subject</b> panel (or let the AI pick one, which it only does when the description clearly matches): its image drives the character IP-Adapter and its tags the prompt; the judge scores identity against it.</p>
+    </div>
+    <div class="panel"><h2>Character library</h2><div class="cards" id="character-list"></div></div>
   </section>
 
   <section class="tab" id="tab-settings">
@@ -607,6 +691,7 @@
           <label class="check"><input type="checkbox" name="loop.confirm_pass">Confirm a passing score with a fresh look before stopping</label>
           <label class="check"><input type="checkbox" name="loop.penalize_extras">Penalize extra items the reference doesn't have (default for jobs; each job can override)</label>
           <label class="check"><input type="checkbox" name="loop.prompt_sees_reference">Show the reference image when writing a prompt from a description</label>
+          <label class="check"><input type="checkbox" name="loop.ai_settings">Let the LLM choose each job's starting steps, CFG, sampler and scheduler (the judge tunes them from round 2 either way; default for jobs, each job can override)</label>
         </div>
         <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-top:12px">
           <label>Rounds kept word-for-word in judge notes <input name="loop.history_keep_rounds" type="number" min="1" max="20"></label>
@@ -664,9 +749,25 @@
           button on each image.</p>
       </fieldset>
       <fieldset>
+        <legend>Upscale</legend>
+        <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+          <label class="check" style="grid-column:1/-1"><input type="checkbox" name="loop.upscale">Upscale the final image of each automatic run (saved as best_upscaled.png)</label>
+          <label title="Enlarges the pixels before the detail pass. Put models in ComfyUI's models/upscale_models folder (e.g. 4x-AnimeSharp for anime, 4x-UltraSharp for painted/realistic). None: a plain Lanczos resize.">Upscale model
+            <select name="upscale.model" class="upscale-model-select"><option value="">none (Lanczos resize)</option></select></label>
+          <label title="Output size = original × this, limited by the longest side below">Scale <input name="upscale.scale" type="number" step="0.25" min="1" max="4"></label>
+          <label title="How much the detail pass redraws: ~0.3 keeps everything and sharpens, ~0.45 adds more detail but may change small things">Detail strength (denoise) <input name="upscale.denoise" type="number" step="0.05" min="0" max="0.7"></label>
+          <label title="Caps the output size; larger takes much longer and more VRAM">Longest side (px) <input name="upscale.max_side" type="number" step="64" min="1024" max="4096"></label>
+        </div>
+        <p class="muted" style="margin:8px 0 0">The image (its auto-fixed version if it has one) is enlarged, then redrawn lightly at the larger size
+          with the checkpoint, LoRAs, prompt and seed that made it, the way hires fix works. The original is always kept. On Home it's a checkbox under
+          Generation; in History, an Upscale button by each image. 1.5× of an SDXL image is ~1.5k px; 2× takes roughly three times as long.</p>
+      </fieldset>
+      <fieldset>
         <legend>Pose ControlNet and hand refiner</legend>
         <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
-          <label>Default pose <select name="defaults.pose" id="default-pose"></select></label>
+          <label>Default pose
+            <button type="button" class="btn pose-pick" data-pose-for="default-pose"></button>
+            <select name="defaults.pose" id="default-pose" hidden></select></label>
           <label>Pose strength <input name="controlnet.pose_strength" type="number" step="0.05" min="0" max="2"></label>
           <label>Pose guidance ends at (share of steps) <input name="controlnet.pose_end" type="number" step="0.05" min="0.1" max="1"></label>
           <label class="check" style="margin-top:18px"><input type="checkbox" name="controlnet.pose_hands">Include hand skeletons in the pose</label>
@@ -753,29 +854,48 @@ function showTab(name) {
   if (name === "settings") loadSettings();
   if (name === "loras") loadLoras();
   if (name === "poses") loadPoses();
+  if (name === "styles") loadRefs("style");
+  if (name === "characters") loadRefs("character");
 }
 $$("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---- home: manual generation ----------------------------------------------------
-const refs = {style: null, pose: null};      // {name, b64} per slot
+// Three targets (style, subject, pose): each is words, and/or (with its box ticked) an image
+// or, for the pose, a saved pose. An image or saved choice counts only while its box is ticked.
+const ROLES = ["style", "subject", "pose"];
+const refs = {style: null, subject: null, pose: null};      // {name, b64} per target
 let loraCatalog = null, loraPicks = [];
-
-$("#two-refs").onchange = e => {
-  $("#refs").classList.toggle("two", e.target.checked);
-  $("#slot-pose").classList.toggle("hide", !e.target.checked);
-  $("#label-style").textContent = e.target.checked ? "Style & character" : "Style, character & pose";
-  if (!e.target.checked) setRef("pose", null);
-};
-$$("#refs input[type=file]").forEach(inp => inp.onchange = () => {
+const targetOn = role => $(`#${role}-use`).checked;
+const refUsed = role => targetOn(role) ? refs[role] : null;
+const targetText = role => $(`#${role}-text`).value.trim();
+const hasImage = role => !!(refUsed(role) || libChoice(role));  // an upload, or a saved one (or the AI's pick)
+const ipOn = () => !!(hasImage("subject") && $("#subject-ip").checked) || !!(hasImage("style") && $("#style-ip").checked);
+// A saved style / character ("" none, "auto" the AI picks, or its name), while the box is ticked.
+const libChoice = role => role !== "pose" && targetOn(role) ? $(`#${role}-library`).value : "";
+const anyTarget = () => ROLES.some(r => refUsed(r) || targetText(r) || libChoice(r)) || (targetOn("pose") && !!$("#pose-library").value);
+function setTargetOn(role, on) {
+  $(`#${role}-use`).checked = on;
+  $(`#${role}-extra`).classList.toggle("hide", !on);
+}
+$$(".target-toggle").forEach(cb => cb.onchange = () => { setTargetOn(cb.dataset.role, cb.checked); syncPromptLock(); updateEstimate(); });
+ROLES.forEach(r => $(`#${r}-text`).addEventListener("input", syncPromptLock));
+// {role: {image_b64, image_name, text}} for the requests that take targets.
+function targetsForRequest() {
+  return Object.fromEntries(ROLES.map(r => [r, {text: targetText(r), image_b64: refUsed(r)?.b64 || null,
+                                                image_name: refUsed(r)?.name || null, library: libChoice(r) || null}]));
+}
+$$(".ref-slot input[type=file]").forEach(inp => inp.onchange = () => {
   const f = inp.files[0];
   if (!f) return;
   const r = new FileReader();
   r.onload = () => setRef(inp.dataset.ref, {name: f.name, b64: r.result});
   r.readAsDataURL(f);
 });
-$$("#refs [data-clear]").forEach(b => b.onclick = () => setRef(b.dataset.clear, null));
+$$(".ref-slot [data-clear]").forEach(b => b.onclick = () => setRef(b.dataset.clear, null));
 function setRef(which, value) {
   refs[which] = value;
+  if (value) setTargetOn(which, true);
+  if (value && which !== "pose") { $(`#${which}-library`).value = ""; syncRefButtons(); }  // an upload or a saved one, not both
   const slot = $("#slot-" + which), img = $(`[data-preview=${which}]`), clear = $(`[data-clear=${which}]`);
   slot.classList.toggle("filled", !!value);
   img.hidden = clear.hidden = !value;
@@ -792,12 +912,12 @@ function syncPromptLock() {
   desc.disabled = !!hasPrompts;
   pos.disabled = neg.disabled = !!hasDesc;
   const btn = $("#write-prompts");
-  btn.disabled = writingPrompts || (!hasDesc && !refs.style);
+  btn.disabled = writingPrompts || (!hasDesc && !anyTarget());
   if (!writingPrompts) btn.textContent = $("#prompt-loras").checked ? "Write prompts and choose LoRAs" : "Write prompts";
   $("#prompt-note").textContent = hasPrompts
     ? "Your prompts are in use. Clear them to describe it in words instead."
     : hasDesc ? "The LLM will turn this into a positive and negative prompt when you generate."
-    : refs.style ? "With no description, the prompts are written from the reference image."
+    : anyTarget() ? "With no description, the prompts are written from the style, subject and pose."
     : "Write the prompts yourself, or describe the image above.";
 }
 ["home-desc", "home-pos", "home-neg"].forEach(id => $("#" + id).addEventListener("input", syncPromptLock));
@@ -814,8 +934,7 @@ $("#write-prompts").onclick = async () => {
   btn.textContent = "Writing prompts…";
   try {
     const r = await api("/api/prompt/preview", {
-      description: $("#home-desc").value, image_b64: refs.style ? refs.style.b64 : undefined,
-      loras: lorasForRequest()});
+      description: $("#home-desc").value, targets: targetsForRequest(), loras: lorasForRequest()});
     $("#home-pos").value = r.positive || ""; $("#home-neg").value = r.negative || "";
     syncPromptLock();
     toast(r.notes ? "Prompts written: " + r.notes.slice(0, 80) : "Prompts written");
@@ -1122,7 +1241,7 @@ async function chooseLoras() {
     const r = await api("/api/loras/suggest", {
       positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
       description: $("#home-desc").value.trim(), keep: lorasForRequest(),
-      image_b64: refs.style ? refs.style.b64 : undefined});
+      image_b64: (refUsed("style") || refUsed("subject"))?.b64});
     const added = (r.picks || []).filter(p => !loraPicks.some(l => l.id === p.id));
     loraPicks.push(...added.map(p => ({...p, strength: p.strength})));
     renderPicks();
@@ -1138,20 +1257,54 @@ $("#prompt-loras").onchange = e => {
 };
 try { $("#prompt-loras").checked = localStorage.getItem("promptLoras") === "1"; } catch {}
 
+// ---- sampler settings from the LLM: fills the fields, or (ticked) is done at generate time ----
+async function suggestSettings() {
+  const note = $("#g-settings-note"), btn = $("#g-suggest");
+  const opts = sel => [...$(sel).options].map(o => o.value).filter(Boolean);
+  const size = $("#g-size").value;
+  btn.disabled = true;
+  note.innerHTML = `<span class="stage"><span class="spin"></span> the LLM is choosing settings…</span>`;
+  try {
+    const r = await api("/api/sampler/suggest", {
+      positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
+      description: $("#home-desc").value.trim(), loras: lorasForRequest(),
+      checkpoint: $("#g-checkpoint").value || null,
+      mode: $("#g-mode").value || ((refUsed("subject") || refUsed("style")) && !ipOn() ? "img2img_reference" : "txt2img"),
+      denoise: Number($("#g-denoise").value), size: size === "auto" ? null : size.split("x").map(Number),
+      current: {steps: Number($("#g-steps").value), cfg: Number($("#g-cfg").value),
+                sampler_name: $("#g-sampler").value, scheduler: $("#g-scheduler").value},
+      samplers: opts("#g-sampler"), schedulers: opts("#g-scheduler")});
+    $("#g-steps").value = r.steps; $("#g-cfg").value = r.cfg;
+    $("#g-sampler").value = r.sampler_name; $("#g-scheduler").value = r.scheduler;
+    note.textContent = (r.changed.length ? `Changed ${r.changed.join(", ")}. ` : "Kept your settings. ") + (r.notes || "");
+    updateEstimate();
+  } catch (e) {
+    note.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`;
+  } finally { btn.disabled = false; }
+}
+$("#g-suggest").onclick = suggestSettings;
+$("#g-upscale").onchange = e => { try { localStorage.setItem("upscale", e.target.checked ? "1" : ""); } catch {} };
+try { $("#g-upscale").checked = localStorage.getItem("upscale") === "1"; } catch {}
+$("#g-ai-settings").onchange = e => { try { localStorage.setItem("aiSettings", e.target.checked ? "1" : ""); } catch {} };
+try { $("#g-ai-settings").checked = localStorage.getItem("aiSettings") === "1"; } catch {}
+
 // ---- generate ----
 function genRequest() {
   const size = $("#g-size").value;
   return {
     description: $("#home-desc").value.trim(),
     positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
-    style_b64: refs.style ? refs.style.b64 : null,
-    pose_b64: refs.pose ? refs.pose.b64 : null,
-    pose_from_style: !$("#two-refs").checked,
-    ipadapter: $("#use-ip").checked && !!refs.style,
-    ip_weight: Number($("#ip-weight").value), ip_preset: $("#ip-preset").value,
-    ip_weight_type: $("#ip-weight-type").value,
-    pose_library: $("#pose-library").value || null,
-    pose_control: $("#use-pose").checked && !!(refs.pose || refs.style || $("#pose-library").value),
+    style_b64: refUsed("style")?.b64 || null, subject_b64: refUsed("subject")?.b64 || null,
+    pose_b64: refUsed("pose")?.b64 || null,
+    style_text: targetText("style"), subject_text: targetText("subject"), pose_text: targetText("pose"),
+    style_library: libChoice("style") || null, subject_library: libChoice("subject") || null,
+    style_ip: hasImage("style") && $("#style-ip").checked, style_ip_weight: Number($("#style-ip-weight").value),
+    subject_ip: hasImage("subject") && $("#subject-ip").checked, subject_ip_weight: Number($("#subject-ip-weight").value),
+    ip_preset: $("#ip-preset").value,
+    pose_library: targetOn("pose") ? ($("#pose-library").value || null) : null,
+    pose_control: targetOn("pose") && $("#use-pose").checked,
+    // ControlNet on, but no pose image or saved pose: follow the subject's (or style's) image
+    pose_from_style: targetOn("pose") && !refUsed("pose") && !$("#pose-library").value,
     pose_strength: Number($("#pose-strength").value), pose_end: Number($("#pose-end").value),
     steps: Number($("#g-steps").value), cfg: Number($("#g-cfg").value),
     denoise: Number($("#g-denoise").value), batch_size: Number($("#g-batch").value),
@@ -1159,7 +1312,7 @@ function genRequest() {
     sampler_name: $("#g-sampler").value, scheduler: $("#g-scheduler").value,
     size: size === "auto" ? "auto" : size.split("x").map(Number),
     mode: $("#g-mode").value || null, checkpoint: $("#g-checkpoint").value || null,
-    autofix: $("#g-autofix").checked,
+    autofix: $("#g-autofix").checked, upscale: $("#g-upscale").checked, ai_settings: $("#g-ai-settings").checked,
     loras: loraPicks.map(l => ({name: l.comfy_name, strength: l.strength})),
   };
 }
@@ -1173,18 +1326,26 @@ async function loadEstimate() {
 function estimateFor(req) {
   if (!estRates) return null;
   const e = estRates, parts = [];
-  const mode = req.mode || (req.style_b64 && !req.ipadapter ? "img2img_reference" : "txt2img");
+  const nIp = (req.subject_ip ? 1 : 0) + (req.style_ip ? 1 : 0);
+  const mode = req.mode || ((req.subject_b64 || req.style_b64) && !nIp ? "img2img_reference" : "txt2img");
   const steps = req.steps * (mode === "txt2img" ? 1 : Math.min(1, Math.max(0.05, req.denoise || 1)));
   const mp = Array.isArray(req.size) ? req.size[0] * req.size[1] / 1e6 : 1.03;  // auto: an SDXL bucket
-  const extra = 1 + (req.ipadapter ? e.ipadapter : 0) + (req.pose_control ? e.control : 0);
+  const extra = 1 + nIp * e.ipadapter + (req.pose_control ? e.control : 0);
   if (!["running", "external"].includes(e.comfyui)) parts.push(["starting ComfyUI", 60]);
-  if (!req.positive && (req.description || req.style_b64)) parts.push(["writing the prompt", e.llm]);
+  if (!req.positive && (req.description || req.style_b64 || req.subject_b64 || req.pose_b64 || req.style_library || req.subject_library
+                         || req.style_text || req.subject_text || req.pose_text)) parts.push(["writing the prompt", e.llm]);
+  if (req.pose_library === "auto") parts.push(["choosing a pose", e.llm * 0.5]);
+  for (const k of ["style", "subject"]) if (req[`${k}_library`] === "auto") parts.push([`choosing a ${k === "style" ? "style" : "character"}`, e.llm * 0.5]);
   if (req.pose_control) parts.push(["reading the pose", 3]);
   const n = Math.max(1, req.batch_size || 1);
   parts.push([`rendering ${n} image${n > 1 ? "s" : ""}`, e.fixed + e.rate * steps * mp * n * extra]);
   if (req.autofix && e.autofix) {  // per image: a look, then each round's repairs (~1 MP crops) and a review
     const a = e.autofix, repair = e.fixed + e.rate * (req.steps || 30) * a.denoise * 1.05 * 1.5;
     parts.push([`auto-fixing (rough)`, n * (8 + a.max_rounds * (a.fixes_per_round * repair + 6))]);
+  }
+  if (req.upscale && e.upscale) {  // per image: a detail pass at scale² the megapixels
+    const u = e.upscale, scale = Math.min(Number(u.scale) || 1.5, Math.max(1, (u.max_side || 2560) / Math.sqrt(mp * 1e6 * 1.3)));
+    parts.push([`upscaling`, n * (e.fixed + (u.model ? 4 : 0) + e.rate * (req.steps || 30) * (u.denoise || 0) * mp * scale * scale)]);
   }
   return {total: parts.reduce((a, [, t]) => a + t, 0), parts};
 }
@@ -1240,17 +1401,28 @@ async function rerunOnHome(r) {
   const size = r.size ? r.size.join("x") : "auto";
   if (![...$("#g-size").options].some(o => o.value === size)) $("#g-size").add(new Option(size, size));
   $("#g-size").value = size;
-  $("#g-mode").value = q.mode || ""; $("#g-checkpoint").value = q.checkpoint || "";
-  $("#use-ip").checked = !!q.ipadapter; setv("ip-weight", q.ip_weight); setv("ip-preset", q.ip_preset);
-  setv("ip-weight-type", q.ip_weight_type);
+  $("#g-mode").value = q.mode || ""; fillCheckpoints($("#g-checkpoint"), q.checkpoint || "");
+  // Targets: words, images and the IP-Adapter / pose settings (a request from before the
+  // separate targets had one reference image: it goes back as the subject).
+  for (const r of ROLES) $(`#${r}-text`).value = q[`${r}_text`] || "";
+  $("#subject-ip").checked = q.subject_ip ?? !!q.ipadapter; $("#style-ip").checked = !!q.style_ip;
+  setv("subject-ip-weight", q.subject_ip_weight ?? q.ip_weight); setv("style-ip-weight", q.style_ip_weight);
+  setv("ip-preset", q.ip_preset);
   $("#use-pose").checked = !!q.pose_control; setv("pose-strength", q.pose_strength); setv("pose-end", q.pose_end);
-  $("#pose-library").value = q.pose_library || "";
+  $("#pose-library").value = q.pose_library || ""; syncPoseButtons();
   $("#lora-auto-note").textContent = "";
   const toRef = async (url, name) => url ? {name, b64: await new Promise(async res => {
     const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(await (await fetch(url)).blob()); })} : null;
-  $("#two-refs").checked = !!r.pose_url; $("#two-refs").onchange({target: $("#two-refs")});
-  setRef("style", await toRef(r.reference_url, "reference.png"));
+  const legacy = !r.subject_url && !q.style_text && !q.subject_text && q.subject_ip == null;
+  for (const role of ROLES) { setRef(role, null); setTargetOn(role, false); }  // setRef(image) ticks its box again
+  for (const role of ["style", "subject"]) setLib(role, q[`${role}_library`] || "");
+  if (legacy) setRef("subject", await toRef(r.reference_url, "reference.png"));
+  else {  // a saved style / character comes back as itself, not as an uploaded copy
+    if (r.reference_url && !q.style_library) setRef("style", await toRef(r.reference_url, "reference.png"));
+    if (r.subject_url && !q.subject_library) setRef("subject", await toRef(r.subject_url, "subject.png"));
+  }
   if (r.pose_url) setRef("pose", await toRef(r.pose_url, "pose_reference.png"));
+  if (q.pose_library || q.pose_control) setTargetOn("pose", true);
   let catalog = [];
   try { catalog = await loadLoraCatalog(); } catch {}
   const norm = n => String(n).replace(/\\/g, "/");
@@ -1275,11 +1447,16 @@ const GEN_DONE = ["done", "error", "cancelled"];
 let shownResult = null;
 function genImagesHtml(g) {
   const fixed = Object.fromEntries((g.fixed || []).map(f => [f.source, f]));
+  const upscaled = Object.fromEntries((g.upscaled || []).map(x => [x.source, x]));
   return (g.images || []).map(u => {
-    const f = fixed[u], show = f && f.fixed ? f.fixed : u;
-    const note = !f ? "" : f.fixed ? `<div class="note">Auto-fixed: ${f.found} issue${f.found === 1 ? "" : "s"} found, ${f.left} left ·
+    const f = fixed[u], up = upscaled[u], show = up && up.upscaled ? up.upscaled : f && f.fixed ? f.fixed : u;
+    let note = !f ? "" : f.fixed ? `<div class="note">Auto-fixed: ${f.found} issue${f.found === 1 ? "" : "s"} found, ${f.left} left ·
           <a href="${esc(u)}" target="_blank" rel="noopener">original</a></div>`
         : `<div class="note">Auto-fix: ${f.found ? `no repair kept (${f.found} issue${f.found === 1 ? "" : "s"} found)` : "nothing to fix"}</div>`;
+    if (up) note += up.upscaled ? `<div class="note">Upscaled to ${up.size[0]} × ${up.size[1]} ·
+          <a href="${esc(up.upscaled)}" target="_blank" rel="noopener">full size</a> ·
+          <a href="${esc(f && f.fixed ? f.fixed : u)}" target="_blank" rel="noopener">before upscaling</a></div>`
+        : `<div class="note" style="color:var(--bad)">Upscale failed: ${esc(up.error || "")}</div>`;
     return `<div><img class="thumb" src="${esc(show)}">${note}
       <button class="btn small" data-use="${esc(show)}" style="margin-top:6px">Use as reference</button></div>`;
   }).join("");
@@ -1289,7 +1466,7 @@ function renderGenPanel(gens) {
   const waiting = gens.filter(g => g.status === "waiting").length;
   const latest = gens.filter(g => GEN_DONE.includes(g.status) && g.status !== "cancelled")
                      .sort((a, b) => (b.finished || 0) - (a.finished || 0))[0];
-  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.rerun ? "Rerun" : "Generation";
+  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.kind === "upscale" ? "Upscale" : g.rerun ? "Rerun" : "Generation";
   let status;
   if (running) {
     const est = running.estimate, el = running.elapsed || 0;
@@ -1320,12 +1497,13 @@ $("#gen-images").addEventListener("click", async e => {
   if (!url) return;
   const blob = await (await fetch(url)).blob();
   const r = new FileReader();
-  r.onload = () => { setRef("style", {name: "generated.png", b64: r.result}); toast("Set as the style reference"); };
+  r.onload = () => { setRef("subject", {name: "generated.png", b64: r.result}); toast("Set as the subject image"); };
   r.readAsDataURL(blob);
 });
 
 $("#do-auto").onclick = async () => {
-  if (!refs.style) return toast("Automatic mode refines toward a reference image — add one first");
+  if (!ROLES.some(r => refUsed(r)))
+    return toast("Automatic mode refines toward an image — add a style, subject or pose image first");
   const req = genRequest();
   try {
     const num = el => $(el).value === "" ? null : Number($(el).value);
@@ -1335,16 +1513,20 @@ $("#do-auto").onclick = async () => {
     const {name} = await api("/api/jobs", {
       name: ($("#a-name").value.trim() || $("#home-pos").value.trim()
              || $("#home-desc").value.trim() || "home").slice(0, 40),
-      image_name: refs.style.name, image_b64: refs.style.b64,
+      targets: targetsForRequest(),
       description: req.description, prompt: req.positive, negative: req.negative,
       settings: clean({steps: req.steps, cfg: req.cfg, sampler_name: req.sampler_name,
                        scheduler: req.scheduler, checkpoint: req.checkpoint,
                        size: $("#g-size").value === "auto" ? "auto" : $("#g-size").value,
-                       pose: $("#pose-library").value || ($("#use-pose").checked ? "reference" : null)}),
+                       pose: !targetOn("pose") ? null : $("#pose-library").value
+                             || ($("#use-pose").checked && !refUsed("pose") ? "reference" : null),
+                       pose_control: targetOn("pose") && !$("#use-pose").checked ? false : null}),
       overrides: clean({threshold: num("#a-threshold"), max_rounds: num("#a-max-rounds"),
                         plateau_rounds: num("#a-plateau"), candidates_per_round: num("#a-candidates"),
                         penalize_extras: pick("#a-extras"), hand_refine: pick("#a-hands"), auto_fix: pick("#a-autofix"),
-                        lora_mode: pick("#a-lora-mode")}),
+                        lora_mode: pick("#a-lora-mode"),
+                        ai_settings: pick("#a-ai-settings") ?? ($("#g-ai-settings").checked || null),
+                        upscale: pick("#a-upscale") ?? ($("#g-upscale").checked || null)}),
     });
     await api("/api/start", {});
     toast("Queued " + name + " — the loop is running");
@@ -1543,11 +1725,12 @@ function renderGenQueue(gens) {
   $("#queue-count").textContent = active + jobs ? `(${active + jobs})` : "";
   $("#gen-clear").classList.toggle("hide", !gens.some(g => GEN_DONE.includes(g.status)));
   if (!gens.length) return `<div class="empty">Nothing queued. Press <b>Generate</b> on Home to add one.</div>`;
-  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.rerun ? "Rerun" : "Generate";
+  const kind = g => g.kind === "autofix" ? "Auto-fix" : g.kind === "upscale" ? "Upscale" : g.rerun ? "Rerun" : "Generate";
   return gens.map(g => {
     const done = GEN_DONE.includes(g.status), on = armed === "gen:" + g.id;
-    const thumb = (g.fixed || []).find(f => f.fixed)?.fixed || (g.images || [])[0];
-    const extras = [g.batch > 1 ? `${g.batch} images` : "", g.autofix ? "+ auto-fix" : "", g.has_reference ? "with reference" : ""]
+    const thumb = (g.upscaled || []).find(u => u.upscaled)?.upscaled || (g.fixed || []).find(f => f.fixed)?.fixed || (g.images || [])[0];
+    const extras = [g.batch > 1 ? `${g.batch} images` : "", g.autofix ? "+ auto-fix" : "", g.upscale ? "+ upscale" : "",
+                    g.has_reference ? "with reference" : ""]
       .filter(Boolean).join(" · ");
     let state;
     if (g.status === "running") {
@@ -1561,7 +1744,7 @@ function renderGenQueue(gens) {
     } else if (g.status === "cancelled") {
       state = `<span class="muted">cancelled</span>`;
     } else {
-      state = `<span class="status done">done</span>` + (g.history ? ` · <a href="#" data-goto="history">in History</a>` : " · not saved to History");
+      state = `<span class="status done">done</span>` + (g.settings_notes ? ` · <span class="muted" title="${esc(g.settings_notes)}">LLM settings</span>` : "") + (g.pose_notes ? ` · <span class="muted" title="${esc(g.pose_notes)}">LLM pose</span>` : "") + (g.library_notes ? ` · <span class="muted" title="${esc(g.library_notes)}">LLM style/character</span>` : "") + (g.history ? ` · <a href="#" data-goto="history">in History</a>` : " · not saved to History");
     }
     const btn = done ? `<button class="btn small" data-gen-dismiss="${esc(g.id)}">Dismiss</button>`
       : `<button class="btn small danger${on ? " armed" : ""}" data-gen-remove="${esc(g.id)}">${
@@ -1653,10 +1836,31 @@ function autofixHtml(run, name, a) {
       <div class="note">Still visible</div>${issuesList(a.issues_left)}</details>` : ""}
     ${button}</div>`;
 }
+// ---- upscale results in History ----
+function upTask(run, name) {  // an upscale of this image waiting or running in the queue
+  return (lastState?.generations || []).find(g => g.kind === "upscale" && g.target === run
+    && (g.sources || []).includes(name) && (g.status === "waiting" || g.status === "running"));
+}
+function upscaleHtml(run, name, u) {
+  const task = upTask(run, name);
+  const button = `<button class="btn small" data-upscale-run="${esc(run)}" data-upscale-image="${esc(name)}" ${task ? "disabled" : ""}>${
+    task ? (task.status === "running" ? "Upscaling…" : "Upscale queued") : u && u.state === "done" ? "Upscale again" : "Upscale"}</button>`;
+  if (!u || task || u.state === "running") return `<div class="fix-box">${button}</div>`;
+  if (u.state === "error" || u.state === "cancelled")
+    return `<div class="fix-box">${button} <span style="color:var(--bad);font-size:12px">${u.state === "error" ? "failed: " + esc(u.error || "") : "cancelled"}</span></div>`;
+  if (!u.upscaled_url) return `<div class="fix-box">${button}</div>`;
+  const from = u.source && u.source !== name ? " from the auto-fixed version" : "";
+  return `<div class="fix-box">
+    <div class="note">Upscaled${esc(from)}</div><img class="thumb" src="${esc(u.upscaled_thumb || u.upscaled_url)}" data-full="${esc(u.upscaled_url)}">
+    <div style="font-size:12px;margin:4px 0">${u.size ? `${u.size[0]} × ${u.size[1]}` : ""}${u.from_size ? ` (from ${u.from_size[0]} × ${u.from_size[1]})` : ""}
+      · ${esc(u.model ? u.model.replace(/\.[^.]+$/, "") : "Lanczos")}${u.seconds ? ` · ${fmtSecs(u.seconds)}` : ""}
+      · <a href="${esc(u.upscaled_url)}" target="_blank">full size</a></div>
+    ${button}</div>`;
+}
 function showFixModal(r, name, url) {
-  openModal(`<div class="modal-head"><h3>Auto-fix · ${esc(r.job || r.run)}</h3><button class="btn small" data-close>Close</button></div>
+  openModal(`<div class="modal-head"><h3>Auto-fix and upscale · ${esc(r.job || r.run)}</h3><button class="btn small" data-close>Close</button></div>
     <div class="fix-pair"><div><div class="note">Before</div><img class="thumb" src="${esc(url)}"></div>
-      <div>${autofixHtml(r.run, name, (r.autofix || {})[name])}</div></div>`);
+      <div>${autofixHtml(r.run, name, (r.autofix || {})[name])}${upscaleHtml(r.run, name, (r.upscale || {})[name])}</div></div>`);
 }
 
 function renderHistory(runs) {
@@ -1670,9 +1874,10 @@ function renderHistory(runs) {
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn small" data-view="${esc(r.run)}">View rounds</button>
       <button class="btn small" data-requeue="${esc(r.job)}">Run again</button>
-      ${r.best_url ? (r.autofix?.["best.png"] || fixTask(r.run, "best.png")
-        ? `<button class="btn small" data-fix-view="${esc(r.run)}">Auto-fix…</button>`
-        : `<button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-image="best.png">Auto-fix</button>`) : ""}
+      ${r.best_url ? (r.autofix?.["best.png"] || fixTask(r.run, "best.png") || r.upscale?.["best.png"] || upTask(r.run, "best.png")
+        ? `<button class="btn small" data-fix-view="${esc(r.run)}">Auto-fix / upscale…</button>`
+        : `<button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-image="best.png">Auto-fix</button>
+           <button class="btn small" data-upscale-run="${esc(r.run)}" data-upscale-image="best.png">Upscale</button>`) : ""}
       ${deleteButton(r.run)}
     </div>
   </div>`).join("");
@@ -1728,7 +1933,8 @@ function manualCard(r) {
     <div class="name" title="${esc(title)}">${esc(title || "Generation")}</div>
     <div><span class="status ${esc(r.status === "error" ? "failed" : r.status)}">${esc(r.status === "done" ? "generated" : r.status)}</span>
       <span class="muted">· ${n} image${n === 1 ? "" : "s"}${r.timing?.total_s ? ` · ${fmtSecs(r.timing.total_s)}` : ""}${
-        Object.values(r.autofix || {}).some(a => a.fixed_url) ? " · auto-fixed" : ""}</span></div>
+        Object.values(r.autofix || {}).some(a => a.fixed_url) ? " · auto-fixed" : ""}${
+        Object.values(r.upscale || {}).some(u => u.upscaled_url) ? " · upscaled" : ""}</span></div>
     <div class="muted" style="font-size:12px">${esc(r.started)}</div>
     ${r.error ? `<div class="clip" style="color:var(--bad);font-size:12px" title="${esc(r.error)}">${esc(r.error)}</div>` : ""}
     <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -1741,7 +1947,19 @@ function manualCard(r) {
 function manualRun(run) { return (lastState?.runs || []).find(r => r.run === run); }
 function showManualRun(r) {
   const loras = (r.loras || []).map(([n, w]) => `${stem(n)} @ ${w}`).join(", ") || "none";
-  const refs = [["Reference", r.reference_url], ["Pose reference", r.pose_url]].filter(([, u]) => u);
+  const tg = r.targets;  // separate style / subject / pose (null for a one-reference generation)
+  const refs = (tg ? [["Style", r.reference_url], ["Subject", r.subject_url], ["Pose", r.pose_url]]
+                   : [["Reference", r.reference_url], ["Pose reference", r.pose_url]]).filter(([, u]) => u);
+  const targetRows = tg ? ["style", "subject", "pose"].filter(k => tg[k]?.text).map(k =>
+      `<tr><th>${k[0].toUpperCase() + k.slice(1)} (words)</th><td>${esc(tg[k].text)}</td></tr>`).join("") : "";
+  const libRows = ["style", "subject"].map(k => {
+    const lib = (r.request || {})[`${k}_library`], p = r[`${k}_pick`];
+    if (!lib && !p) return "";
+    return `<tr><th>${k === "style" ? "Saved style" : "Saved character"}${p ? " (AI pick)" : ""}</th><td>${esc(lib || "none fit")}${
+      p?.reason ? ` · ${esc(p.reason)}` : ""}</td></tr>`;
+  }).join("");
+  const poseRow = r.pose_pick ? `<tr><th>Pose (AI pick)</th><td>${esc(r.pose_pick.pose || "none fit")}${
+      r.pose_pick.reason ? ` · ${esc(r.pose_pick.reason)}` : ""}</td></tr>` : "";
   const t = r.timing;
   openModal(`<div class="modal-head"><h3>Generated ${esc(r.started)}</h3>
       <button class="btn small primary" data-rerun="${esc(r.run)}" ${r.positive && r.request?.steps ? "" : "disabled"}
@@ -1750,14 +1968,17 @@ function showManualRun(r) {
       <button class="btn small" data-close>Close</button></div>
     ${r.error ? `<div class="confirm bad" style="margin:0 0 12px">${esc(r.error)}</div>` : ""}
     ${(r.images || []).length ? `<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span class="muted" style="font-size:12px">Auto-fix looks for flaws (hands, anatomy, proportions, artifacts) and repairs them; the original stays.</span>
-        ${r.images.length > 1 ? `<button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-all="1">Auto-fix all</button>` : ""}</div>
+        <span class="muted" style="font-size:12px">Auto-fix looks for flaws (hands, anatomy, proportions, artifacts) and repairs them; Upscale makes a larger, more detailed copy (of the auto-fixed version if there is one). The original stays.</span>
+        ${r.images.length > 1 ? `<span style="display:flex;gap:6px"><button class="btn small" data-autofix-run="${esc(r.run)}" data-autofix-all="1">Auto-fix all</button>
+          <button class="btn small" data-upscale-run="${esc(r.run)}" data-upscale-all="1">Upscale all</button></span>` : ""}</div>
       <div class="fix-list">${r.images.map((u, i) => `<div class="fix-pair"><div><div class="note">${
         r.images.length > 1 ? `Image ${i + 1}` : "Image"}</div><img class="thumb" src="${esc(u)}"></div>
-        <div>${autofixHtml(r.run, (r.image_names || [])[i], (r.autofix || {})[(r.image_names || [])[i]])}</div></div>`).join("")}</div>` : ""}
+        <div>${autofixHtml(r.run, (r.image_names || [])[i], (r.autofix || {})[(r.image_names || [])[i]])}${
+          upscaleHtml(r.run, (r.image_names || [])[i], (r.upscale || {})[(r.image_names || [])[i]])}</div></div>`).join("")}</div>` : ""}
     <table class="kv-table" style="margin:14px 0">
       <tr><th>Settings</th><td>${esc(r.params || "–")}</td></tr>
       <tr><th>LoRAs</th><td>${esc(loras)}</td></tr>
+      ${targetRows}${libRows}${poseRow}
       <tr><th>IP-Adapter / pose</th><td>${r.ipadapter ? "IP-Adapter" : "no IP-Adapter"} · ${r.control ? "pose ControlNet" : "no pose ControlNet"}</td></tr>
       ${t ? `<tr><th>Time</th><td>${fmtSecs(t.total_s)} (render ${fmtSecs(t.render_s)}${t.llm_s ? `, prompt ${fmtSecs(t.llm_s)}` : ""})</td></tr>` : ""}
       ${r.request?.description ? `<tr><th>Description</th><td>${esc(r.request.description)}</td></tr>` : ""}
@@ -1781,6 +2002,20 @@ async function loadStatus() {
   const pill = (label, v) => `<span class="pill ${v === "ok" ? "ok" : "bad"}" title="${esc(v)}">${label}${v === "ok" ? "" : ": " + esc(v)}</span>`;
   const comfyState = status.comfyui?.state;
   $("#pills").innerHTML = (comfyState === "starting" ? `<span class="pill" title="${esc(status.comfyui.message)}">ComfyUI: starting…</span>` : pill("ComfyUI", status.comfy)) + pill("Judge · " + (status.backend || "?"), status.judge) + pill("Workflows", status.workflows);
+  if (status.upscale_models) $$(".upscale-model-select").forEach(sel => {
+    const cur = sel.value || sel.dataset.want || "";
+    if (sel.options.length === 1 + status.upscale_models.length) return;
+    sel.innerHTML = `<option value="">none (Lanczos resize)</option>` + status.upscale_models.map(v => `<option>${esc(v)}</option>`).join("")
+      + (cur && !status.upscale_models.includes(cur) ? `<option>${esc(cur)}</option>` : "");
+    sel.value = cur;
+  });
+  // Lists that come from ComfyUI were empty if it wasn't up yet (e.g. still auto-starting) when
+  // the page loaded: fill them in once it is.
+  if (status.comfy === "ok" && !checkpointList?.items.length) loadCheckpoints();
+  if (status.samplers && !$("#g-sampler").options.length) {
+    const fill = (sel, list, pick) => $(sel).innerHTML = list.map(o => `<option ${o === pick ? "selected" : ""}>${esc(o)}</option>`).join("");
+    fill("#g-sampler", status.samplers, "dpmpp_2m"); fill("#g-scheduler", status.schedulers || [], "karras");
+  }
   for (const [cls, list] of [["sampler-select", status.samplers], ["scheduler-select", status.schedulers]]) {
     if (!list) continue;
     $$("." + cls).forEach(sel => { if (sel.options.length <= 1) sel.innerHTML = `<option value="">default</option>` + list.map(v => `<option>${esc(v)}</option>`).join(""); });
@@ -1825,6 +2060,13 @@ document.addEventListener("click", async e => {
       await api("/api/autofix", {run, images});
       t.disabled = true; t.textContent = "Auto-fix queued";
       toast(`Auto-fix queued (${images.length} image${images.length === 1 ? "" : "s"}) — follow it in the Queue tab`); poll_now();
+    }
+    if (t.dataset.upscaleRun) {
+      const run = t.dataset.upscaleRun, r = manualRun(run);
+      const images = t.dataset.upscaleAll ? (r?.image_names || []) : [t.dataset.upscaleImage];
+      await api("/api/upscale", {run, images});
+      t.disabled = true; t.textContent = "Upscale queued";
+      toast(`Upscale queued (${images.length} image${images.length === 1 ? "" : "s"}) — follow it in the Queue tab`); poll_now();
     }
     if (t.dataset.fixView) { const r = manualRun(t.dataset.fixView); if (r) showFixModal(r, "best.png", r.best_url); }
     if (t.dataset.genDismiss) { await api("/api/generations/remove", {id: t.dataset.genDismiss}); poll_now(); }
@@ -1910,32 +2152,227 @@ async function loadPoses() {
         <div class="note">${esc(p.description || "no description")}</div>
         <button class="btn small danger" data-remove-pose="${esc(p.name)}" title="Moves it to poses/_removed/">Delete</button></div>`).join("")
     : `<div class="empty">No poses yet. Add one above.</div>`;
-  const sel = $("#default-pose");
-  if (sel) {
-    const keep = sel.value;
-    sel.innerHTML = `<option value="off">none</option><option value="reference">from the reference</option>` +
+  for (const id of Object.keys(POSE_SPECIALS)) {  // the hidden selects behind the pose buttons
+    const sel = $("#" + id);
+    if (!sel) continue;
+    const keep = sel.value || sel.dataset.want || "";
+    sel.innerHTML = POSE_SPECIALS[id].map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("") +
       poseList.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
-    if (keep) sel.value = keep;
+    sel.value = keep;
+    if (sel.value !== keep) sel.value = POSE_SPECIALS[id][0][0];
   }
-  const home = $("#pose-library");   // Home's saved-pose picker
-  if (home) {
-    const keep = home.value;
-    home.innerHTML = `<option value="">upload an image instead</option>` +
-      poseList.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join("");
-    if (keep) home.value = keep;
-  }
+  syncPoseButtons();
 }
+
+// ---- pose picker: a button showing the chosen pose; it opens a dialog with every saved pose
+// (skeleton and source image) plus the choices that aren't a saved pose ----
+const POSE_SPECIALS = {
+  "pose-library": [["", "No saved pose", "Use the pose reference (or none)"],
+                   ["auto", "AI picks", "The LLM picks the saved pose that fits the description, or none"]],
+  "default-pose": [["off", "None", "No pose ControlNet"], ["reference", "From the reference", "Follow the reference image's pose"],
+                   ["auto", "AI picks", "The LLM picks the saved pose that fits each job, or none"]],
+};
+function syncPoseButtons() {
+  $$("[data-pose-for]").forEach(btn => {
+    const sel = $("#" + btn.dataset.poseFor), v = sel ? sel.value : "";
+    const p = poseList.find(x => x.name === v), special = (POSE_SPECIALS[btn.dataset.poseFor] || []).find(([k]) => k === v);
+    btn.innerHTML = p ? `<img src="${esc(p.preview)}" alt=""><span>${esc(p.name)}</span>`
+      : `<span>${esc(special ? special[1] : v || "None")}</span>`;
+    btn.innerHTML += `<span class="muted" style="margin-left:auto">Change…</span>`;
+  });
+}
+function openPosePicker(id) {
+  const sel = $("#" + id), cur = sel.value;
+  const specials = (POSE_SPECIALS[id] || []).map(([v, label, note]) => `<div class="card special ${v === cur ? "sel" : ""}" data-pick-pose="${esc(v)}">
+      <div class="name">${esc(label)}</div><div class="note">${esc(note)}</div></div>`).join("");
+  const cards = poseList.map(p => `<div class="card ${p.name === cur ? "sel" : ""}" data-pick-pose="${esc(p.name)}"
+      data-search="${esc((p.name + " " + (p.description || "")).toLowerCase())}">
+      <div class="pair"><img src="${esc(p.preview)}" alt="skeleton" loading="lazy"><img src="${esc(p.source)}" alt="source" loading="lazy"></div>
+      <div class="name">${esc(p.name)}</div><div class="note clip" title="${esc(p.description || "")}">${esc(p.description || "no description")}</div></div>`).join("");
+  openModal(`<div class="modal-head"><h3>Choose a pose</h3>
+      <input id="pose-search" placeholder="filter by name or pose" style="max-width:260px">
+      <button class="btn small" data-close>Close</button></div>
+    <div class="cards pose-grid">${specials}${cards || `<div class="empty">No saved poses yet. Add some on the Poses tab.</div>`}</div>`);
+  $("#pose-search").focus();
+  $("#pose-search").oninput = e => {
+    const q = e.target.value.trim().toLowerCase();
+    $$(".pose-grid [data-search]").forEach(c => c.classList.toggle("hide", !!q && !c.dataset.search.includes(q)));
+  };
+  $$(".pose-grid [data-pick-pose]").forEach(c => c.onclick = () => {
+    sel.value = c.dataset.pickPose;
+    sel.dispatchEvent(new Event("change", {bubbles: true}));
+    syncPoseButtons(); closeModal();
+  });
+}
+syncPoseButtons();  // labelled now; loadPoses() relabels once the saved poses are in
+document.addEventListener("click", e => {
+  const btn = e.target.closest("[data-pose-for]");
+  if (btn) { e.preventDefault(); openPosePicker(btn.dataset.poseFor); }
+});
+$("#pose-library").addEventListener("change", e => {
+  if (e.target.value) $("#use-pose").checked = true;  // choosing a pose means using it
+  updateEstimate();
+});
+// One or several images, or a whole folder: added one after another (each is a pose
+// detection and, unless named, an LLM call), with what was skipped listed at the end.
+const POSE_EXTS = /\.(png|jpe?g|webp)$/i;
+function poseFiles(f) {
+  const folder = [...(f.elements["folder"].files || [])], picked = [...(f.elements["image"].files || [])];
+  const files = (folder.length ? folder : picked)
+    .filter(x => POSE_EXTS.test(x.name) && !(x.webkitRelativePath || x.name).split("/").some(p => p.startsWith(".")));
+  return files.sort((a, b) => (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name, undefined, {numeric: true}));
+}
+const readB64 = file => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+["image", "folder"].forEach(k => $("#pose-form").elements[k].addEventListener("change", e => {
+  const other = $("#pose-form").elements[k === "image" ? "folder" : "image"];
+  if (e.target.files.length) other.value = "";  // one source at a time
+  const n = poseFiles($("#pose-form")).length;
+  $("#pose-add").textContent = n > 1 ? `Add ${n} poses` : "Add pose";
+  $("#pose-status").textContent = k === "folder" && e.target.files.length && !n ? "No PNG, JPG or WebP images in that folder" : "";
+}));
 $("#pose-form").onsubmit = async e => {
   e.preventDefault();
-  const f = e.target, file = f.image.files[0];
-  if (!file) return;
-  $("#pose-status").textContent = "Extracting the pose…";
-  try {
-    const b64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
-    const r = await api("/api/poses", {name: f.elements["name"].value || file.name.replace(/\.[^.]+$/, ""), image_b64: b64});
-    $("#pose-status").textContent = "Added " + r.name; f.reset(); loadPoses();
-  } catch (err) { $("#pose-status").textContent = "Couldn't add it: " + err.message; }
+  const f = e.target, files = poseFiles(f), name = f.elements["name"].value.trim();
+  if (!files.length) { $("#pose-status").textContent = "Choose an image or a folder of images"; return; }
+  const btn = $("#pose-add"), added = [], skipped = [];
+  btn.disabled = true;
+  for (const [i, file] of files.entries()) {
+    const label = file.webkitRelativePath || file.name;
+    $("#pose-status").textContent = (files.length > 1 ? `${i + 1} of ${files.length} · ` : "")
+      + (name ? "Extracting the pose" : "Extracting and naming the pose") + (files.length > 1 ? ` (${label})…` : "…");
+    try {
+      const r = await api("/api/poses", {name, image_b64: await readB64(file), fallback: file.name.replace(/\.[^.]+$/, "")});
+      added.push(r.name); loadPoses();
+    } catch (err) { skipped.push(`${label}: ${err.message}`); }
+  }
+  btn.disabled = false;
+  if (added.length) { f.reset(); btn.textContent = "Add pose"; }
+  const st = $("#pose-status");
+  st.textContent = files.length === 1
+    ? (added.length ? "Added " + added[0] : "Couldn't add it: " + skipped[0].split(": ").slice(1).join(": "))
+    : `Added ${added.length} of ${files.length} poses` + (skipped.length ? ` · ${skipped.length} skipped (hover for why)` : "");
+  st.title = skipped.join("\n");
 };
+
+// ---- saved styles and characters (reflib): their tabs, and the pickers in Home's Style and
+// Subject panels (a button showing the choice; it opens a dialog with every saved one) ----
+const REF_API = {style: "/api/styles", character: "/api/characters"};
+const ROLE_KIND = {style: "style", subject: "character"};
+const refLists = {style: [], character: []};
+const refPlural = kind => kind === "style" ? "styles" : "characters";
+async function loadRefs(kind) {
+  let s;
+  try { s = await api(REF_API[kind]); } catch { return; }
+  refLists[kind] = s.items;
+  $(`#${kind}-list`).innerHTML = s.items.length ? s.items.map(p => `<div class="card">
+      <img class="thumb" src="${esc(p.thumb || p.source)}" loading="lazy">
+      <div class="name">${esc(p.name)}</div>
+      <div class="note clip" title="${esc(p.description || "")}">${esc(p.description || "no tags")}</div>
+      <button class="btn small danger" data-remove-ref="${esc(p.name)}" data-kind="${kind}" title="Moves it to ${refPlural(kind)}/_removed/">Delete</button></div>`).join("")
+    : `<div class="empty">No ${refPlural(kind)} yet. Add one above.</div>`;
+  for (const [role, k] of Object.entries(ROLE_KIND)) if (k === kind) fillRefSelect(role, $(`#${role}-library`).value);
+  syncRefButtons();
+}
+// The hidden select behind a picker button: none, AI picks, every saved one, and `value`
+// (kept even when it isn't in the list, e.g. a rerun before the list has loaded).
+function fillRefSelect(role, value = "") {
+  const sel = $(`#${role}-library`), names = refLists[ROLE_KIND[role]].map(p => p.name);
+  const opts = [...refSpecials(role).map(([v, label]) => [v, label]), ...names.map(n => [n, n])];
+  if (value && !opts.some(([v]) => v === value)) opts.push([value, value]);
+  sel.innerHTML = opts.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
+  sel.value = value;
+}
+function refSpecials(role) {
+  const k = ROLE_KIND[role];
+  return [["", `No saved ${k}`, "Use the image below (or only the words)"],
+          ["auto", "AI picks", k === "style" ? "The LLM picks the saved style that fits the description, or none"
+                                             : "The LLM picks the saved character the description names or matches, or none"]];
+}
+function setLib(role, value) {
+  fillRefSelect(role, value);
+  if (value) setTargetOn(role, true);
+  syncRefButtons();
+}
+function syncRefButtons() {
+  $$("[data-ref-for]").forEach(btn => {
+    const role = btn.dataset.refFor, v = $(`#${role}-library`).value;
+    const p = refLists[ROLE_KIND[role]].find(x => x.name === v), special = refSpecials(role).find(([k]) => k === v);
+    btn.innerHTML = (p ? `<img src="${esc(p.thumb || p.source)}" alt=""><span>${esc(p.name)}</span>`
+      : `<span>${esc(special ? special[1] : v)}</span>`) + `<span class="muted" style="margin-left:auto">Change…</span>`;
+  });
+}
+function openRefPicker(role) {
+  const kind = ROLE_KIND[role], sel = $(`#${role}-library`), cur = sel.value;
+  const specials = refSpecials(role).map(([v, label, note]) => `<div class="card special ${v === cur ? "sel" : ""}" data-pick-ref="${esc(v)}">
+      <div class="name">${esc(label)}</div><div class="note">${esc(note)}</div></div>`).join("");
+  const cards = refLists[kind].map(p => `<div class="card ${p.name === cur ? "sel" : ""}" data-pick-ref="${esc(p.name)}"
+      data-search="${esc((p.name + " " + (p.description || "")).toLowerCase())}">
+      <img class="one" src="${esc(p.thumb || p.source)}" alt="" loading="lazy">
+      <div class="name">${esc(p.name)}</div><div class="note clip" title="${esc(p.description || "")}">${esc(p.description || "no tags")}</div></div>`).join("");
+  openModal(`<div class="modal-head"><h3>Choose a ${kind}</h3>
+      <input id="ref-search" placeholder="filter by name or tags" style="max-width:260px">
+      <button class="btn small" data-close>Close</button></div>
+    <div class="cards pose-grid">${specials}${cards || `<div class="empty">No saved ${refPlural(kind)} yet. Add some on the ${kind === "style" ? "Styles" : "Characters"} tab.</div>`}</div>`);
+  $("#ref-search").focus();
+  $("#ref-search").oninput = e => {
+    const q = e.target.value.trim().toLowerCase();
+    $$(".pose-grid [data-search]").forEach(c => c.classList.toggle("hide", !!q && !c.dataset.search.includes(q)));
+  };
+  $$(".pose-grid [data-pick-ref]").forEach(c => c.onclick = () => {
+    sel.value = c.dataset.pickRef;
+    if (sel.value) setRef(role, null);  // a saved one replaces an uploaded image
+    syncRefButtons(); closeModal(); syncPromptLock(); updateEstimate();
+  });
+}
+Object.keys(ROLE_KIND).forEach(r => fillRefSelect(r));
+syncRefButtons();  // labelled now; loadRefs() relabels once the saved ones are in
+document.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-ref-for]");
+  if (btn) { e.preventDefault(); openRefPicker(btn.dataset.refFor); return; }
+  const del = e.target.closest("[data-remove-ref]");
+  if (!del) return;
+  const key = `ref:${del.dataset.kind}:${del.dataset.removeRef}`;
+  if (armed !== key) return arm(key);
+  armed = null; clearTimeout(armTimer);
+  try {
+    await api(REF_API[del.dataset.kind] + "/remove", {name: del.dataset.removeRef});
+    loadRefs(del.dataset.kind); toast(`Deleted (moved to ${refPlural(del.dataset.kind)}/_removed/)`);
+  } catch (err) { toast(err.message); }
+});
+// Adding: one or several images, or a folder, one after another (each an LLM call for the
+// tags, and the name unless one is typed). Same file rules as poses (poseFiles).
+$$(".ref-form").forEach(f => {
+  const kind = f.dataset.kind, btn = f.querySelector("button[type=submit]"), st = f.querySelector(".ref-status");
+  const label = n => n > 1 ? `Add ${n} ${refPlural(kind)}` : `Add ${kind}`;
+  ["image", "folder"].forEach(k => f.elements[k].addEventListener("change", e => {
+    if (e.target.files.length) f.elements[k === "image" ? "folder" : "image"].value = "";  // one source at a time
+    const n = poseFiles(f).length;
+    btn.textContent = label(n);
+    st.textContent = k === "folder" && e.target.files.length && !n ? "No PNG, JPG or WebP images in that folder" : "";
+  }));
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const files = poseFiles(f), name = f.elements["name"].value.trim();
+    if (!files.length) { st.textContent = "Choose an image or a folder of images"; return; }
+    const added = [], skipped = [];
+    btn.disabled = true;
+    for (const [i, file] of files.entries()) {
+      const where = file.webkitRelativePath || file.name;
+      st.textContent = (files.length > 1 ? `${i + 1} of ${files.length} · ` : "")
+        + (name ? "Tagging" : "Tagging and naming") + (files.length > 1 ? ` (${where})…` : "…");
+      try {
+        const r = await api(REF_API[kind], {name, image_b64: await readB64(file), fallback: file.name.replace(/\.[^.]+$/, "")});
+        added.push(r.name); loadRefs(kind);
+      } catch (err) { skipped.push(`${where}: ${err.message}`); }
+    }
+    btn.disabled = false;
+    if (added.length) { f.reset(); btn.textContent = label(1); }
+    st.textContent = files.length === 1
+      ? (added.length ? "Added " + added[0] : "Couldn't add it: " + skipped[0].split(": ").slice(1).join(": "))
+      : `Added ${added.length} of ${files.length}` + (skipped.length ? ` · ${skipped.length} skipped (hover for why)` : "");
+    st.title = skipped.join("\n");
+  };
+});
 
 $("#back-live").onclick = () => { viewingRun = null; clearTimeout(handsPoll); $("#viewing").classList.add("hide"); lastRender.run = null; lastRender.jobbar = null; poll_now(); };
 
@@ -1979,12 +2416,12 @@ async function useLibraryItem(name) {
   const blob = await (await fetch(it.reference)).blob();
   const reader = new FileReader();
   await new Promise(res => { reader.onload = res; reader.readAsDataURL(blob); });
-  setRef("style", {name: it.reference.split("/").pop(), b64: reader.result});
+  setRef("subject", {name: it.reference.split("/").pop(), b64: reader.result});
   $("#home-desc").value = "";
   $("#home-pos").value = it.positive; $("#home-neg").value = it.negative;
   $("#a-name").value = it.name;
   syncPromptLock(); closeModal(); showTab("home");
-  toast("Loaded into Home, with the library image as the reference");
+  toast("Loaded into Home, with the library image as the subject");
 }
 
 // ---- settings ----
@@ -2089,11 +2526,12 @@ async function loadSettings() {
   set("queue.parallel_jobs", (s.queue || {}).parallel_jobs ?? 2);
   set("queue.llm_parallel", (s.queue || {}).llm_parallel ?? 1);
   await loadPoses();
-  set("defaults.pose", s.defaults.pose || "off");
+  set("defaults.pose", s.defaults.pose || "off"); syncPoseButtons();
   const cn = s.controlnet || {}, hs = s.hands || {};
   set("controlnet.pose_strength", cn.pose_strength ?? 0.6); set("controlnet.pose_end", cn.pose_end ?? 0.8);
   set("controlnet.pose_hands", cn.pose_hands ?? true); set("hands.denoise", hs.denoise ?? 0.6);
   for (const [k, v] of Object.entries(s.autofix || {})) set("autofix." + k, v);
+  for (const [k, v] of Object.entries(s.upscale || {})) set("upscale." + k, v);
   await loadCheckpoints();
   set("defaults.checkpoint", s.defaults.checkpoint || "");
   set("defaults.size", s.defaults.size || "auto");
@@ -2111,7 +2549,12 @@ async function loadSettings() {
 function setField(name, v) {
   const el = $("#settings-form").querySelector(`[name='${name}']`);
   if (!el) return;
-  if (el.type === "checkbox") el.checked = !!v; else el.value = v == null ? "" : String(v);
+  if (el.type === "checkbox") { el.checked = !!v; return; }
+  const want = v == null ? "" : String(v);
+  if (el.classList.contains("upscale-model-select") && want && ![...el.options].some(o => o.value === want))
+    el.add(new Option(want, want));  // e.g. an upscale model before ComfyUI has listed them
+  el.dataset.want = want;
+  el.value = want;
 }
 function showPreset(p, applied) {
   const note = $("#preset-note");
@@ -2140,12 +2583,16 @@ $("#settings-form [name='openai.model']").addEventListener("change", e => applyP
 let checkpointList = null;
 async function loadCheckpoints() {
   try { checkpointList = await api("/api/checkpoints"); } catch { return; }
-  for (const sel of $$(".checkpoint-select")) {
-    const keep = sel.value, first = sel.options[0].outerHTML;
-    sel.innerHTML = first + checkpointList.items.map(c =>
-      `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(c.base)}${c.name === checkpointList.default ? " (workflow)" : ""}${c.usable ? "" : " (not SDXL)"}</option>`).join("");
-    sel.value = keep;
-  }
+  for (const sel of $$(".checkpoint-select")) fillCheckpoints(sel, sel.value);
+}
+// The options from checkpointList (once loaded), keeping `value` even when it isn't listed:
+// a rerun before the list has loaded, or while ComfyUI is down and the list is empty.
+function fillCheckpoints(sel, value) {
+  const first = sel.options[0].outerHTML, items = checkpointList?.items || [];
+  sel.innerHTML = first + items.map(c =>
+    `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(c.base)}${c.name === checkpointList.default ? " (workflow)" : ""}${c.usable ? "" : " (not SDXL)"}</option>`).join("")
+    + (value && !items.some(c => c.name === value) ? `<option value="${esc(value)}">${esc(value)}${checkpointList?.items.length ? " (not found)" : ""}</option>` : "");
+  sel.value = value || "";
 }
 
 $("#settings-form").onsubmit = async e => {
@@ -2176,8 +2623,8 @@ $("#settings-form").onsubmit = async e => {
            send_top_k: num("loop.send_top_k"), local_prefilter: val("loop.local_prefilter").checked,
            min_reference_denoise: num("loop.min_reference_denoise"), allow_inpaint_reference: val("loop.allow_inpaint_reference").checked,
            confirm_pass: val("loop.confirm_pass").checked, penalize_extras: val("loop.penalize_extras").checked,
-           prompt_sees_reference: val("loop.prompt_sees_reference").checked, hand_refine: val("loop.hand_refine").checked,
-           auto_fix: val("loop.auto_fix").checked,
+           prompt_sees_reference: val("loop.prompt_sees_reference").checked, ai_settings: val("loop.ai_settings").checked, hand_refine: val("loop.hand_refine").checked,
+           auto_fix: val("loop.auto_fix").checked, upscale: val("loop.upscale").checked,
            history_keep_rounds: num("loop.history_keep_rounds"), prompt_token_budget: num("loop.prompt_token_budget")},
     defaults: {checkpoint: val("defaults.checkpoint").value, size: val("defaults.size").value, pose: val("defaults.pose").value},
     controlnet: {pose_strength: num("controlnet.pose_strength") || 0.6, pose_end: num("controlnet.pose_end") || 0.8,
@@ -2187,6 +2634,8 @@ $("#settings-form").onsubmit = async e => {
               min_severity: optNum("autofix.min_severity"), denoise: optNum("autofix.denoise"),
               img2img_denoise: optNum("autofix.img2img_denoise"), image_max_side: optNum("autofix.image_max_side"),
               keep_margin: optNum("autofix.keep_margin")},
+    upscale: {model: val("upscale.model").value, scale: optNum("upscale.scale"), denoise: optNum("upscale.denoise"),
+              max_side: optNum("upscale.max_side")},
     queue: {parallel_jobs: Math.max(1, num("queue.parallel_jobs") || 1),
             llm_parallel: Math.max(1, num("queue.llm_parallel") || 1)},
     comfyui: {autostart: val("comfyui.autostart").checked, stop_on_exit: val("comfyui.stop_on_exit").checked},
@@ -2244,7 +2693,7 @@ let startTab = "home"; try { startTab = localStorage.getItem("tab") || "home"; }
 showTab(startTab);
 loadStatus(); setInterval(loadStatus, 20000);
 loadCheckpoints();
-loadPoses();
+loadPoses(); loadRefs("style"); loadRefs("character");
 loadEstimate(); setInterval(loadEstimate, 30000);  // also notices ComfyUI starting or stopping
 poll();
 </script>

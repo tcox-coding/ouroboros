@@ -150,3 +150,30 @@ def test_suggested_loras_are_unique_and_within_the_limit():
     cards = [{"comfy_name": c, "title": c, "weight": {"min": 0.2, "max": 1.2, "default": 0.8}} for c in "ABC"]
     out = suggest_loras(Backend(), cards, positive="1girl", max_loras=2)
     assert [p["comfy_name"] for p in out["picks"]] == ["A", "B"]
+
+
+# ---- pose names ----
+
+@pytest.fixture
+def poses(tmp_path, monkeypatch):
+    import ouroboros.pose as pm
+    from PIL import Image
+    monkeypatch.setattr(pm, "detect", lambda image: {"body": [[0.5, 0.5]] * 18, "size": [64, 64]})
+    monkeypatch.setattr(pm, "render", lambda pose, size, **k: Image.new("RGB", size))
+    return pm.PoseLibrary(tmp_path / "poses"), Image.new("RGB", (64, 64))
+
+
+def test_an_unnamed_pose_takes_the_llm_name(poses):
+    lib, img = poses
+    name = lib.add("", img, lambda im: ("standing, hands on hips", "hands_on_hips/three quarter!"), fallback="IMG_0042")
+    assert name == "hands_on_hips_three quarter"  # made folder-safe
+    assert lib.get(name)["description"] == "standing, hands on hips"
+
+
+def test_a_given_name_wins_and_the_file_name_is_the_fallback(poses):
+    lib, img = poses
+    assert lib.add("my pose", img, lambda im: ("tags", "llm_name")) == "my pose"
+    assert lib.add("", img, lambda im: ("", ""), fallback="IMG_0042") == "IMG_0042"  # LLM failed
+    assert lib.add("", img, lambda im: "old style tags only", fallback="") == "pose"
+    assert lib.add("", img, lambda im: ("tags", "llm_name")) == "llm_name"
+    assert lib.add("", img, lambda im: ("tags", "llm_name")) == "llm_name_2"  # never overwrites

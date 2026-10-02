@@ -99,6 +99,8 @@ ouroboros/
     generate.py     One-off generation for the Home tab: the loop's renderer, driven by hand;
                     the generation queue, its time estimate and History reruns
     autofix.py      Auto-fix: inspect an image for flaws, repaint them, keep what a review approves
+    upscale.py      Upscale: enlarge (upscale model or Lanczos), then a light detail pass at the new size
+    settings_advisor.py  The LLM's starting steps/cfg/sampler/scheduler for a render or a job
     keys.py         API keys for DeepInfra, OpenAI and Civitai (Settings -> API keys)
     thumbs.py       Cached JPEG thumbnails for History and the LoRA example renders
     lora_catalog.py The classified LoRA library (lora-classifier output) as cards for the picker
@@ -111,6 +113,9 @@ ouroboros/
     masks.py        mask_target text -> CLIPSeg mask -> image with that region transparent
     comfy_launcher.py  Starts ComfyUI hidden in the background (Comfy Desktop's install)
     pose.py         DWPose skeletons (rtmlib), drawn for the openpose ControlNet; the pose library
+    pose_picker.py  "AI picks": the saved pose, style or character that fits a request, or none
+    targets.py      A render's three targets (style, subject, pose): image and/or words each
+    reflib.py       The saved style and character libraries (styles/, characters/)
     handfix.py      Hand refiner: repaint each hand along a fitted five-finger skeleton
     llm_queue.py    One first-come-first-served queue for every LLM call (several jobs at once)
     judge_eval.py   Compare judge models on quality and speed (python -m ouroboros eval ...)
@@ -203,11 +208,12 @@ the description locks the prompt boxes, text in either prompt box locks the desc
 into, so you can see and edit it. With a reference image and no description at all, the prompt is
 written from the image.
 
-**References.** One reference supplies the character, style *and* pose. Tick **Separate pose
-reference** and it splits in two: one image for the character and drawing style, another (or a
-saved pose from the library) for where the limbs go. As in a job, img2img starts from the
-reference centre-cropped to the output size (transparency flattened onto white); **auto** size
-follows the reference's shape, or with no reference, the pose's.
+**Targets: Style, Subject, Pose.** Each has its own panel: words, and behind a checkbox an
+image, a saved one (Styles / Characters / Poses tabs) or **AI picks**. Nothing behind the box
+counts while it is unticked. See *Three targets* below. As in a job, img2img starts from the
+subject (else style) image centre-cropped to the output size (transparency flattened onto
+white), unless an IP-Adapter carries it; **auto** size follows that image's shape, or with
+none, the pose's.
 
 **LoRAs.** The picker lists every classified LoRA with its Civitai showcase image, name, tags and
 a one-line description of what it does. Each pick gets a strength slider bounded by the range that
@@ -220,7 +226,40 @@ fits, and costs about half a cent (~28K tokens, mostly a cached prefix).
 (threshold, rounds, candidates, hand refine, LoRA mode) under *Automatic run options*.
 
 Each tab owns one thing: Home makes images, Queue lists jobs, History holds finished runs, LoRAs
-browses the library, Poses manages saved poses, Settings holds the defaults.
+browses the library, Poses / Styles / Characters manage the saved ones, Settings holds the defaults.
+
+### Three targets: style, subject, pose
+A render used to aim at one reference image standing for everything. Now it has three targets
+(`targets.py`), each an image, words, or both:
+- **Style**: the art style (line work, shading, palette, medium). Its image drives an IP-Adapter
+  in `style transfer` mode (`ipadapter.style_weight`, 0.5) and the LoRA picker's comparison.
+- **Subject**: the character (face, hair, build, outfit). Its image drives a `linear`
+  IP-Adapter (`ipadapter.subject_weight`, 0.6). Two adapters chain, sharing one loader.
+- **Pose**: stance and framing, via the pose ControlNet (an image, a saved pose or AI picks).
+
+The prompt writer gets each target with what to take from it (the drawing style from STYLE,
+never its subject; the character from SUBJECT; the pose from POSE). The judge scores each rubric
+criterion against its own target: identity, colour and extras against the subject, style against
+the style, composition against the pose, quality on the candidate alone; each image is sent once.
+An empty target falls back to the job's main image, so a job with one image and no words
+behaves exactly as before (`Targets.split` is false). Jobs store targets in `job.json`
+(`{"style": {"image": "style.png", "text": "..."}}`); an automatic run needs at least one image.
+
+### Saved styles and characters
+`reflib.py` keeps them as poses are kept: `styles/<name>/` and `characters/<name>/`, each
+`source.png` plus `meta.json` with the tags the LLM wrote when it was added (style tags only for
+a style; the character's features and outfit only for a character). Added from the **Styles**
+and **Characters** tabs (one image, several, or a folder; unnamed ones are named by the LLM),
+deleted into `_removed/`. Choosing one for a target uses its image, and its tags as the target's
+words when none are typed.
+
+**AI picks** (`pose_picker.pick_item`) gives the LLM the description and prompt and a menu of
+names and tags (a text shortlist of 40 for big libraries); it must answer with a name from the
+menu or "none". The character picker is told never to substitute a different character, so it
+picks only on a clear match. On Home the pick happens before the prompt is written and History
+records the name it chose, so a rerun uses it without asking again; in a job the loop picks at
+the start (`settings.style_library` / `subject_library` = "auto"). A named one in a job is copied
+into the job folder when it is queued.
 
 ### One LoRA library
 `loras.catalog_dir` points at a lora-classifier output, and that is the library: the Home tab's
@@ -595,6 +634,25 @@ are shown to it so it adds only what they lack and nothing that fights them (a s
 or pose). The prompts are then written for the full set. A generation whose prompt the LLM
 writes at render time (description only) is written for its selected LoRAs the same way.
 
+### Starting sampler settings from the LLM
+The judge already changes steps, cfg, sampler and scheduler from round 2 on (they're in
+its edit schema). `settings_advisor.py` chooses the values the first render starts from,
+instead of the fixed defaults. It's one text-only call that sees the checkpoint and its
+model family (`loras.checkpoint_base`), the mode and denoise, the output size, the prompt
+and each active LoRA's brief. It may only pick samplers and schedulers that ComfyUI lists,
+and steps and cfg are clamped to `params.BOUNDS`. If the answer is unusable or the call
+fails, the current values stay.
+
+- **Home tab:** **Suggest settings** fills the four fields so they can be checked before
+  rendering. **AI chooses at generate time** asks right before rendering, after the
+  prompts are written, and the form's values are only the fallback. The chosen values
+  and the model's reasoning are saved to the generation's `run.json` (`ai_settings`).
+  The saved request is updated with those values, so a History rerun reproduces the
+  render without asking again.
+- **Loop:** `loop.ai_settings` (Settings → Loop, or per job; **Run automatically** sets it
+  from the Home checkbox or its own option) asks once before round 1, after the prompt
+  and LoRAs are chosen. The answer is logged and saved in `run.json`.
+
 ### The generation queue
 Home generations, and auto-fixes started from History, go into one queue (`generate.py`):
 one worker, oldest first, so the Home tab is free again as soon as Generate is pressed and
@@ -652,6 +710,28 @@ Where it runs:
 
 Every step's files are in the run folder's `autofix/`, and the record in `autofix.json`.
 
+### Upscale
+`upscale.py` makes a larger, more detailed copy of a finished image, the way hires fix does,
+using the checkpoint that made it. A different model family such as Flux was ruled out: it
+can't use the SDXL LoRAs, needs prose prompts, handles explicit content poorly, and would
+have to be swapped in and out of an 11 GB card.
+
+1. **Enlarge.** An upscale model (`upscale.model`, from ComfyUI's `models/upscale_models`,
+   e.g. 4x-AnimeSharp) followed by a Lanczos resize to the exact size, or only the Lanczos
+   resize when no model is set. The size is the original × `upscale.scale` (1.5 by default),
+   capped at `upscale.max_side`, in multiples of 8.
+2. **Add detail.** A light img2img pass at the new size through the user's workflow, with the
+   image's own prompt (as rendered), LoRAs, seed, sampler and cfg, at `upscale.denoise`
+   (0.35 by default; 0 skips this pass). The workflow encodes the loaded image as it is and
+   decodes with VAEDecodeTiled, so the larger size fits in memory.
+
+The image upscaled is its auto-fixed version when auto-fix kept one. The result is saved next
+to the original as `<name>_upscaled.png` (the loop's as `best_upscaled.png`; `best.png` stays
+the judged image), and the run's `upscale.json` records it for History. Upscaling is a
+checkbox under Generation on Home, an option of Run automatically, `loop.upscale` in
+Settings, and an **Upscale** button by each image in History. History upscales run as queue
+tasks, like auto-fix.
+
 ### Pose ControlNet and the pose library
 Uses the xinsir ControlNet Union SDXL "promax" model (`models/controlnet/xinsir_union_sdxl_promax.safetensors`)
 in openpose mode. Poses are extracted here, not in ComfyUI: DWPose (RTMW whole-body keypoints via
@@ -668,7 +748,12 @@ A job's **Pose** (job form, or Settings -> default pose):
   the output size follows the pose image's shape, the prompt writer is given the pose's
   description, and the judge gets the skeleton and scores composition against it.
 
-Add poses in the **Poses** tab from any image of a person. The skeleton is saved as
+**AI picks** (`pose_picker.pick_pose`) chooses the saved pose that fits the description and
+prompt from the poses' names and tags, or none; the picker on Home and in Settings is a button
+that opens a dialog with each pose's skeleton and source image.
+
+Add poses in the **Poses** tab from any image of a person (one, several, or a folder). Unnamed
+poses are named by the LLM after what they show. The skeleton is saved as
 normalized keypoints (`poses/<name>/pose.json`, plus `preview.png` and `source.png`), so it is
 drawn fresh at each job's output size. The LLM writes a short tag description of the pose.
 

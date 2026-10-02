@@ -65,12 +65,20 @@ def _restore(original: str, result: str, dropped: list[str]) -> str:
 def write_prompt(backend, description: str, positive: str = "", negative: str = "",
                  style_positive: str = "", style_negative: str = "",
                  reference: Path | None = None, max_side: int = 512, lora_notes: str = "",
-                 pose_note: str = "") -> dict:
-    """Returns {"positive", "negative", "notes", "dropped"}."""
-    from_image = not description.strip() and not positive.strip()
+                 pose_note: str = "", targets: list[dict] | None = None) -> dict:
+    """Returns {"positive", "negative", "notes", "dropped"}.
+    targets: targets.prompt_parts(): separate STYLE / SUBJECT / POSE texts and images, each
+    saying what to take from it (then `reference` is usually None)."""
+    from_image = not description.strip() and not positive.strip() and not targets
     parts: list[dict] = [{"text": f"DESCRIPTION\n{description.strip()}" if not from_image else
                           "DESCRIPTION\n(none: write the prompt from the REFERENCE image alone, describing "
                           "the character, outfit, pose, framing, background and drawing style you see)"}]
+    if targets:
+        parts.append({"text": "TARGETS: the render has a separate style, subject and pose. Take each part of the "
+                              "prompt from its own target only, as each says:"})
+        parts += targets
+        if not description.strip():
+            parts[0] = {"text": "DESCRIPTION\n(none: write the prompt from the TARGETS below)"}
     if lora_notes:
         parts.append({"text": "LORAS that will be active (put each one's trigger words in the positive prompt "
                               "exactly as written; write the prompt so it works with what each LoRA does - "

@@ -71,7 +71,7 @@ def post(base, path, body):
 
 
 @pytest.mark.parametrize("path", ["/", "/api/state", "/api/settings", "/api/generate/estimate", "/api/poses",
-                                  "/api/loras/catalog", "/static/icon.png"])
+                                  "/api/styles", "/api/characters", "/api/loras/catalog", "/static/icon.png"])
 def test_pages_and_read_only_endpoints_answer(server, path):
     code, body = get(server, path)
     assert code == 200, body[:200]
@@ -101,6 +101,10 @@ def test_bad_requests_are_refused_without_side_effects(server):
     assert post(server, "/api/runs/remove", {"run": "manual/../../config.json"})[0] >= 400
     assert post(server, "/api/autofix", {"run": "manual/does-not-exist", "images": ["image_01.png"]})[0] >= 400
     assert post(server, "/api/keys", {"name": "not-a-platform", "value": "x"})[0] >= 400
+    assert post(server, "/api/styles/remove", {"name": "../config.json"})[0] >= 400
+    assert post(server, "/api/characters/remove", {"name": "_removed"})[0] >= 400
+    code, body = post(server, "/api/jobs", {"targets": {"style": {"library": "no_such_style_saved"}}})
+    assert code == 400 and "no saved style" in body["error"]
 
 
 @pytest.mark.parametrize("path", ["/files/runs/../config.json", "/files/runs/%2e%2e/api_keys.json",

@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .targets import ROLES, Targets, from_spec
+
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -36,6 +38,7 @@ class Job:
     description: str = ""
     settings: dict = field(default_factory=dict)   # seed/steps/cfg/sampler_name/scheduler/denoise/mode
     overrides: dict = field(default_factory=dict)  # threshold, max_rounds, max_cost_usd, ...
+    targets: Targets = field(default_factory=Targets)  # style / subject / pose (see targets.py)
 
 
 def _pairs(path: Path) -> dict:
@@ -52,11 +55,13 @@ def load_job(folder: Path) -> Job:
     spec = json.loads((folder / "job.json").read_text(encoding="utf-8")) if (folder / "job.json").exists() else {}
     settings = _pairs(folder / "settings.txt")
 
+    targets = from_spec(spec, folder)
     ref_name = spec.get("reference") or settings.pop("reference_image", None)
-    reference = folder / ref_name if ref_name else next(
+    reference = folder / ref_name if ref_name else targets.primary() or next(
         (p for p in sorted(folder.iterdir()) if p.suffix.lower() in IMAGE_EXTS), None)
     if not reference or not reference.exists():
-        raise FileNotFoundError(f"No reference image in {folder}")
+        raise FileNotFoundError(f"No reference image in {folder} (an automatic run needs at least one image: "
+                                "style, subject or pose)")
 
     def text(key: str, file: str) -> str:
         if key in spec:
@@ -66,9 +71,9 @@ def load_job(folder: Path) -> Job:
 
     settings.update(spec.get("settings", {}))
     overrides = {k: v for k, v in spec.items()
-                 if k not in ("prompt", "negative", "description", "reference", "settings")}
+                 if k not in ("prompt", "negative", "description", "reference", "settings", *ROLES)}
     return Job(folder.name, folder, reference, text("prompt", "positive.txt"), text("negative", "negative.txt"),
-               text("description", "description.txt"), settings, overrides)
+               text("description", "description.txt"), settings, overrides, targets)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -122,11 +127,31 @@ class Queue:
         (folder / QUEUED_FILE).write_text(str(time.time()))
         return folder
 
-    def add(self, name: str, reference_name: str, reference_bytes: bytes, spec: dict) -> Path:
+    def add(self, name: str, reference_name: str | None, reference_bytes: bytes | None, spec: dict,
+            target_images: dict[str, tuple[str, bytes]] | None = None) -> Path:
+        """target_images: {role: (file name, bytes)} for the style/subject/pose images; each
+        is saved as <role><ext> and named in spec[role]["image"]. With no reference image
+        given, the subject's (else style's, else pose's) is the job's reference."""
         folder = self._new_folder(name)
-        ref = safe_name(Path(reference_name).name) or "reference.png"
-        (folder / ref).write_bytes(reference_bytes)
-        (folder / "job.json").write_text(json.dumps({**spec, "reference": ref}, indent=2), encoding="utf-8")
+        spec = dict(spec)
+        for role, (fname, data) in (target_images or {}).items():
+            if role not in ROLES:
+                continue
+            f = f"{role}{Path(fname).suffix.lower() or '.png'}"
+            (folder / f).write_bytes(data)
+            spec[role] = {**(spec.get(role) or {}), "image": f}
+        if reference_bytes is not None:
+            ref = safe_name(Path(reference_name or "reference.png").name) or "reference.png"
+            (folder / ref).write_bytes(reference_bytes)
+            spec["reference"] = ref
+        else:
+            ref = next((spec[r]["image"] for r in ("subject", "style", "pose")
+                        if isinstance(spec.get(r), dict) and spec[r].get("image")), None)
+            if not ref:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise ValueError("an automatic run needs at least one image: style, subject or pose")
+            spec["reference"] = ref
+        (folder / "job.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
         return self._stamp(folder)
 
     def import_folder(self, source: Path) -> Path:

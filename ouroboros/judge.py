@@ -36,6 +36,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .backends import make_backend
 from .params import MODES, PHASES
 from .sizes import to_rgb
+from .targets import LABELS, Targets, judge_parts, target_images
 
 INSTRUCTIONS = """You steer a local Stable Diffusion XL (ComfyUI) pipeline toward a reference image.
 
@@ -287,11 +288,16 @@ class Judge:
     def review(self, reference: Path, job_goal: str, current: str, notes: str,
                candidates: list[Path], modes: list[str] | None = None, rules: str = "",
                rubric: dict[str, dict] | None = None, extra_note: str = "",
-               loras: dict | None = None, pose: dict | None = None, backend=None) -> Review:
+               loras: dict | None = None, pose: dict | None = None, backend=None,
+               targets: Targets | None = None) -> Review:
         """loras: {"menu": text listing the job's LoRA shortlist, "stems": [names the
         judge may use], "max": int}, or None when LoRAs aren't being tuned.
         pose: {"image": skeleton path, "description": str} when the pose comes from a
-        separate pose image (the pose library), not from the reference."""
+        separate pose image (the pose library), not from the reference.
+        targets: separate style/subject/pose targets (targets.py). When they say more than
+        the one reference would (targets.split), each criterion is judged against its own
+        target instead of everything against `reference`."""
+        split = targets is not None and (targets.split or bool(pose))
         rubric = rubric or self.base_rubric
         side = self.cfg.get("image_max_side", 512)
         sheet = self.cfg.get("contact_sheet_size", 1120)  # llama3.2-vision reads up to 1120x1120
@@ -309,13 +315,34 @@ class Judge:
         round_text = (f"NOTES ON EARLIER ROUNDS\n{notes or 'none'}"
                       + f"\n\nPARAMETERS THE EDIT APPLIES TO\n{current}"
                       + (f"\n\n{extra_note}" if extra_note else ""))
-        if self.cfg.get("contact_sheet"):
+        if self.cfg.get("contact_sheet") and split:
+            seen, tiles = set(), []
+            for role, image, _text in target_images(targets, reference, pose):
+                if image is not None and str(Path(image).resolve()) not in seen:
+                    seen.add(str(Path(image).resolve()))
+                    tiles.append((LABELS[role], image))
+            texts = [p["text"] for p in judge_parts(targets, reference, pose) if "text" in p]
+            labels = [lbl for lbl, _ in tiles] + [f"CANDIDATE {i}" for i in range(len(candidates))]
+            parts += [{"text": "\n".join(texts)}, {"text": round_text},
+                      {"text": f"The image is a grid: the targets first ({', '.join(l for l, _ in tiles)}), then "
+                               f"CANDIDATE 0 to {len(candidates) - 1}, each labelled above its tile."},
+                      {"image": contact_sheet(tiles[0][1], [i for _, i in tiles[1:]] + list(candidates), sheet, labels)
+                       if tiles else contact_sheet(candidates[0], candidates[1:], sheet, labels),
+                       "max_side": sheet}]
+        elif self.cfg.get("contact_sheet"):
             parts += [
                 {"text": round_text},
                 {"text": f"The image is a grid: REFERENCE first, then CANDIDATE 0 to {len(candidates) - 1}, "
                          "each labelled above its tile."},
                 {"image": contact_sheet(reference, candidates, sheet), "max_side": sheet},
             ]
+        elif split:
+            n = len(candidates)
+            parts += judge_parts(targets, reference, pose)
+            parts += [{"text": round_text},
+                      {"text": f"Now {n} candidate(s), numbered 0 to {n - 1}:"}]
+            for i, path in enumerate(candidates):
+                parts += [{"text": f"CANDIDATE {i}:"}, {"image": path}]
         else:
             n = len(candidates)
             parts += [
@@ -333,8 +360,10 @@ class Judge:
             for i, path in enumerate(candidates):
                 parts += [{"text": f"CANDIDATE {i}:"}, {"image": path}]
         # Models also attend well to the very end of the prompt: restate the task there.
-        parts.append({"text": "TASK: for each candidate list its differences from the REFERENCE, then score it "
-                              "against the rubric anchors; pick the best; diagnose; propose ONE edit. JSON only."})
+        parts.append({"text": "TASK: for each candidate list its differences from "
+                              + ("its TARGETS (each criterion against its own target)" if split else "the REFERENCE")
+                              + ", then score it against the rubric anchors; pick the best; diagnose; propose ONE "
+                                "edit. JSON only."})
 
         schema = build_schema(list(rubric), self.samplers, self.schedulers, len(candidates), modes,
                               loras["stems"] if loras else None, loras["max"] if loras else 3,
@@ -351,7 +380,7 @@ class Judge:
     def review_each(self, reference: Path, job_goal: str, current: str | list[str], notes: str,
                     candidates: list[Path], modes: list[str] | None = None, rules: str = "",
                     rubric: dict[str, dict] | None = None, extra_note: str = "",
-                    loras: dict | None = None, pose: dict | None = None) -> Review:
+                    loras: dict | None = None, pose: dict | None = None, targets: Targets | None = None) -> Review:
         """Score each candidate in its own call (reference + that one image) and combine.
 
         A position test (the same 3 images in all 6 orders, qwen3-vl 8B) showed that
@@ -372,7 +401,8 @@ class Judge:
         def one(args):
             c, cur = args
             set_label(label)
-            return self.review(reference, job_goal, cur, notes, [c], modes, rules, rubric, extra_note, loras, pose)
+            return self.review(reference, job_goal, cur, notes, [c], modes, rules, rubric, extra_note, loras, pose,
+                               targets=targets)
         # Side by side: a big early round would otherwise wait for each call in turn. The
         # backend's gate (queue.llm_parallel) still decides how many really run at once.
         workers = max(1, min(len(candidates), int(getattr(self, "parallel", 1))))
@@ -398,12 +428,12 @@ class Judge:
 
     def confirm(self, reference: Path, job_goal: str, current: str, image: Path,
                 modes: list[str] | None, rules: str, rubric: dict[str, dict],
-                loras: dict | None = None, pose: dict | None = None) -> Review:
+                loras: dict | None = None, pose: dict | None = None, targets: Targets | None = None) -> Review:
         """Re-score one passing image in a fresh context: no notes from earlier rounds,
         so a claim like "the emblem is gone" can't carry over. Its edit is used to
         continue if the image doesn't pass again."""
         return self.review(reference, job_goal, current, "", [image], modes, rules, rubric, CONFIRM_NOTE, loras,
-                           pose, self.confirm_backend)
+                           pose, self.confirm_backend, targets=targets)
 
     def summarize(self, previous: str, entries: list[str]) -> tuple[str, float]:
         parts = [{"text": f"PREVIOUS SUMMARY\n{previous or 'none'}\n\nNEW ROUND NOTES\n" + "\n".join(entries)}]

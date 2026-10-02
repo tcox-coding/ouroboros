@@ -5,6 +5,7 @@ import time
 import pytest
 
 import ouroboros.generate as gen
+from conftest import FakeComfy
 from ouroboros.comfy import Cancelled
 
 
@@ -163,58 +164,6 @@ def test_history_entry_with_a_queued_autofix_cannot_be_deleted(monkeypatch):
             d.rmdir()
 
 
-class FakeComfy:
-    """Records uploads and graphs; every render returns one small PNG."""
-    uploads: list = []
-    graphs: list = []
-
-    def __init__(self, url):
-        pass
-
-    def upload_image(self, path, subfolder="x"):
-        from PIL import Image
-        with Image.open(path) as im:
-            FakeComfy.uploads.append((path.name, im.size, im.mode))
-        return f"{subfolder}/{path.name}"
-
-    def queue(self, graph):
-        FakeComfy.graphs.append(graph)
-        return "pid"
-
-    def wait(self, ids, should_stop=None):
-        return {"pid": {"outputs": {}}}
-
-    def fetch_images(self, hist, node):
-        import io
-        from PIL import Image
-        buf = io.BytesIO()
-        Image.new("RGB", (8, 8)).save(buf, "PNG")
-        return [buf.getvalue()]
-
-
-@pytest.fixture
-def home_run(tmp_path, monkeypatch):
-    """_run against the example workflow and a fake ComfyUI."""
-    import shutil
-    from pathlib import Path
-    import ouroboros.workflow as wf
-    src = Path(__file__).resolve().parent.parent / "workflows"
-    (tmp_path / "workflows").mkdir()
-    for f in ("example_workflow.json", "nodes.example.json"):
-        shutil.copy(src / f, tmp_path / "workflows" / f)
-    monkeypatch.setattr(wf, "_lora_root", lambda: None)
-    monkeypatch.setattr(gen, "ComfyClient", FakeComfy)
-    FakeComfy.uploads, FakeComfy.graphs = [], []
-
-    def run(**req):
-        gen.JOBS["h"] = {"id": "h"}
-        gen._run("h", {"comfy_url": "x", "judge": {}}, {"positive": "1girl", "steps": 20, **req}, tmp_path,
-                 lambda p: str(p), lambda: False)
-        assert gen.JOBS["h"]["status"] == "done", gen.JOBS["h"].get("error")
-        return gen.JOBS["h"]
-    return run
-
-
 def b64_png(size, mode="RGBA"):
     import base64
     import io
@@ -250,3 +199,78 @@ def test_library_pose_is_cropped_not_stretched_and_sets_auto_size(home_run, tmp_
     assert drawn["size"] == (1216, 832) and "1216x832" in job["params"]  # auto follows the pose's shape
     home_run(pose_library="wide", pose_control=True, size=[832, 1216])
     assert drawn["pose"]["body"][0] == pytest.approx([0.5, 0.5]) and drawn["pose"]["body"][1] is None  # cropped
+
+
+class SettingsBackend:
+    def __init__(self, answer=None, fail=False):
+        self.answer, self.fail = answer, fail
+
+    def complete(self, instructions, parts, schema, name, max_side):
+        if self.fail:
+            raise RuntimeError("judge offline")
+        return self.answer, 0.0, 0
+
+
+@pytest.fixture
+def ai_settings(monkeypatch):
+    import ouroboros.backends as backends
+    import ouroboros.runner as runner
+    from conftest import FakeLibrary
+    monkeypatch.setattr(FakeComfy, "choices", lambda self, node, name: (
+        ["euler", "dpmpp_2m"] if name == "sampler_name" else ["normal", "karras"]), raising=False)
+    monkeypatch.setattr(runner, "lora_library", lambda cfg: FakeLibrary({}))
+
+    def use(backend):
+        monkeypatch.setattr(backends, "make_backend", lambda cfg: backend)
+    return use
+
+
+def test_home_ai_settings_replace_the_form_values_and_rerun_reproduces_them(home_run, ai_settings, tmp_path):
+    ai_settings(SettingsBackend({"steps": 24, "cfg": 6.5, "sampler_name": "euler", "scheduler": "normal", "notes": "ok"}))
+    job = home_run(ai_settings=True, cfg=5.5, sampler_name="dpmpp_2m", scheduler="karras")
+    assert "steps=24 cfg=6.5 euler/normal" in job["params"] and "euler/normal" in job["settings_notes"]
+    rec = json.loads(next((tmp_path / "runs" / "manual").glob("*/run.json")).read_text())
+    assert rec["ai_settings"]["form"]["steps"] == 20 and rec["request"]["ai_settings"] is False
+    assert rec["request"]["steps"] == 24  # a History rerun renders exactly this
+
+
+def test_home_ai_settings_failure_keeps_the_form_values(home_run, ai_settings):
+    ai_settings(SettingsBackend(fail=True))
+    job = home_run(ai_settings=True, cfg=5.5, sampler_name="dpmpp_2m", scheduler="karras")
+    assert "steps=20 cfg=5.5 dpmpp_2m/karras" in job["params"] and "judge offline" in job["warning"]
+
+
+def test_home_upscale_after_generating_saves_a_larger_copy(home_run, tmp_path):
+    job = home_run(upscale=True)
+    run_dir = next((tmp_path / "runs" / "manual").iterdir())
+    assert (run_dir / "image_01_upscaled.png").exists() and (run_dir / "image_01.png").exists()
+    assert job["upscaled"][0]["upscaled"].endswith("image_01_upscaled.png") and not job.get("warning")
+    assert json.loads((run_dir / "upscale.json").read_text())["image_01.png"]["state"] == "done"
+
+
+def test_upscale_tasks_protect_their_history_entry():
+    gen.JOBS["u"] = {"id": "u", "kind": "upscale", "status": "running", "target": "manual/x"}
+    try:
+        assert "manual/x" in gen.busy_targets()
+    finally:
+        gen.JOBS.pop("u")
+
+
+def test_home_ai_pose_pick_uses_the_pose_and_records_it(home_run, monkeypatch, tmp_path):
+    import ouroboros.backends as backends
+    import ouroboros.pose as pm
+    from PIL import Image
+    d = tmp_path / "poses" / "hands_on_hips"
+    d.mkdir(parents=True)
+    Image.new("RGB", (832, 1216)).save(d / "source.png")
+    body = [[0.5, 0.5]] * 18
+    (d / "pose.json").write_text(json.dumps({"body": body, "size": [832, 1216], "description": "hands on hips"}))
+    monkeypatch.setattr(pm, "available", lambda: True)
+    monkeypatch.setattr(pm, "has_body", lambda p, min_points=4: True)
+    monkeypatch.setattr(pm, "render", lambda pose, size, **k: Image.new("RGB", size))
+    monkeypatch.setattr(backends, "make_backend", lambda cfg: type("B", (), {
+        "complete": lambda self, *a: ({"pose": "hands_on_hips", "reason": "fits"}, 0.0, 0)})())
+    job = home_run(pose_library="auto", size="auto")
+    assert "hands_on_hips" in job["pose_notes"] and "832x1216" in job["params"]  # auto size follows the pose
+    rec = json.loads(next((tmp_path / "runs" / "manual").glob("*/run.json")).read_text())
+    assert rec["request"]["pose_library"] == "hands_on_hips" and rec["request"]["pose_control"] is True

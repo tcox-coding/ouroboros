@@ -22,6 +22,7 @@ import requests
 
 from . import generate as generate_mod
 from . import autofix, keys, thumbs
+from . import upscale as upscale_mod
 from .backends import deepinfra_models, ollama_models
 from .jobs import IMAGE_EXTS, STATUSES, Queue, load_job
 from .loras import checkpoint_base, compatible
@@ -29,7 +30,8 @@ from .params import lora_stem
 from .runner import ROOT, Runner, comfy_launcher, load_config, lora_library, rel_url, save_config
 
 STATIC = ROOT / "static"
-FILE_DIRS = ("jobs", "runs", "cache/lora_images", "cache/reruns", "poses")  # what /files/ serves
+FILE_DIRS = ("jobs", "runs", "cache/lora_images", "cache/reruns", "poses", "styles", "characters")  # what /files/ serves
+REF_ROUTES = {"/api/styles": "style", "/api/characters": "character"}  # the saved style / character libraries
 runner = Runner()
 queue = Queue(ROOT / "jobs")
 
@@ -107,14 +109,38 @@ def preview_prompt(data: dict) -> dict:
         style_pos, style_neg = flows.default("positive"), flows.default("negative")
     except Exception:
         style_pos = style_neg = ""
+    import io
+
+    from PIL import Image
+
+    from .targets import Target, Targets, prompt_parts
+
+    def image(b64):
+        return Image.open(io.BytesIO(base64.b64decode(b64.split(",", 1)[-1]))) if b64 else None
     reference = None
     if data.get("image_b64") and cfg["loop"].get("prompt_sees_reference", True):
-        import io
-        from PIL import Image
-        reference = Image.open(io.BytesIO(base64.b64decode(data["image_b64"].split(",", 1)[-1])))
-    return write_prompt(make_backend(cfg["judge"]), data["description"], data.get("prompt", ""),
-                        data.get("negative", ""), style_pos, style_neg, reference,
-                        cfg["judge"].get("image_max_side", 512), selected_lora_notes(cfg, data.get("loras")))
+        reference = image(data["image_b64"])
+    # Separate style / subject / pose targets ({role: {"image_b64", "text"}}): each part of the
+    # prompt from its own target, as a generation would write it (one image and no text is
+    # the classic single reference).
+    from .reflib import resolve
+    raw = data.get("targets") or {}
+    for r, t in raw.items():  # a saved style / character stands in for an uploaded image
+        lib = (t or {}).get("library") if isinstance(t, dict) else None
+        if lib and lib != "auto" and not t.get("image_b64") and (got := resolve(ROOT, r, lib)):
+            t["image_b64"] = base64.b64encode(Path(got["image"]).read_bytes()).decode()
+            t["text"] = (t.get("text") or "").strip() or got["description"]
+    tg = Targets(**{r: Target(image(t.get("image_b64")), (t.get("text") or "").strip())
+                    for r, t in raw.items() if r in ("style", "subject", "pose") and isinstance(t, dict)})
+    texts = any(t.text for _, t in tg.items())
+    images = [t.image for _, t in tg.items() if t.image is not None]
+    split = texts or (tg.style.image is not None and tg.subject.image is not None)
+    if not split and images and reference is None and cfg["loop"].get("prompt_sees_reference", True):
+        reference = tg.subject.image or tg.style.image or images[0]
+    return write_prompt(make_backend(cfg["judge"]), data.get("description", ""), data.get("prompt", ""),
+                        data.get("negative", ""), style_pos, style_neg, None if split else reference,
+                        cfg["judge"].get("image_max_side", 512), selected_lora_notes(cfg, data.get("loras")),
+                        targets=prompt_parts(tg) if split else None)
 
 
 def runs_list(limit: int = 60) -> list[dict]:
@@ -146,6 +172,7 @@ def _loop_entry(d: Path) -> dict:
     s["best_url"] = rel_url(d / "best.png") if (d / "best.png").exists() else None
     s["best_thumb"] = thumbs.url(ROOT, d / "best.png") if s["best_url"] else None
     s["autofix"] = autofix_view(d)
+    s["upscale"] = upscale_view(d)
     return s
 
 
@@ -174,11 +201,14 @@ def _manual_entry(d: Path) -> dict:
             "best_url": images[0] if images else None,
             "reference_url": rel_url(ref) if ref.exists() else None,
             "pose_url": rel_url(pose) if pose and pose.exists() else None,
+            "subject_url": rel_url(d / rec["subject_reference"]) if rec.get("subject_reference")
+            and (d / rec["subject_reference"]).exists() else None,
+            "targets": rec.get("targets"), "pose_pick": rec.get("pose_pick"),
             "positive": rec.get("positive", ""), "negative": rec.get("negative", ""),
             "params": rec.get("params", ""), "size": rec.get("size"),
             "loras": rec.get("loras") or [], "timing": rec.get("timing"),
             "ipadapter": bool(rec.get("ipadapter")), "control": bool(rec.get("control")),
-            "request": rec.get("request") or {}, "autofix": autofix_view(d),
+            "request": rec.get("request") or {}, "autofix": autofix_view(d), "upscale": upscale_view(d),
             "image_names": [f.name for f in files]}
 
 
@@ -260,7 +290,12 @@ POSE_DESCRIBE = """Describe only the POSE and FRAMING of the main character in t
 Diffusion tags: framing (e.g. cowboy shot, full body, upper body), body orientation,
 stance and weight, arm and hand positions, head direction, and eye gaze direction (as
 seen by the viewer: looking to the viewer's left/right, at the viewer). No clothing,
-hair, colours, character or background. 8-20 short comma-separated tags. JSON only."""
+hair, colours, character or background. 8-20 short comma-separated tags.
+
+Also give the pose a short name (2-5 lowercase words joined by underscores, e.g.
+hands_on_hips_three_quarter, sitting_cross_legged, over_shoulder_glance) naming its most
+distinctive feature so it can be told apart in a list of poses. Only the pose, never the
+character or outfit. JSON only."""
 
 
 def pose_library():
@@ -276,7 +311,8 @@ def poses_list() -> dict:
                       for p in pose_library().list()]}
 
 
-def add_pose(name: str, image_b64: str) -> str:
+def add_pose(name: str, image_b64: str, fallback: str = "") -> str:
+    """Save a pose. With no name, the LLM names it from the pose (else `fallback`, the file name)."""
     import io
     from PIL import Image
     from .backends import make_backend
@@ -285,16 +321,55 @@ def add_pose(name: str, image_b64: str) -> str:
     img.load()
     cfg = load_config()
 
-    def describe(image) -> str:
+    def describe(image) -> tuple[str, str]:
+        """(pose tags, suggested name); the name is only asked for when none was given."""
+        props = {"pose": {"type": "string"}, **({} if name.strip() else {"name": {"type": "string"}})}
         try:
             data, _c, _t = make_backend(cfg["judge"]).complete(
                 POSE_DESCRIBE, [{"text": "IMAGE:"}, {"image": image}],
-                {"type": "object", "properties": {"pose": {"type": "string"}}, "required": ["pose"],
+                {"type": "object", "properties": props, "required": list(props),
                  "additionalProperties": False}, "pose", cfg["judge"].get("image_max_side", 512))
-            return data.get("pose", "").strip()
+            return data.get("pose", "").strip(), str(data.get("name") or "").strip().lower().replace(" ", "_")
         except Exception:  # the LLM is optional here: the skeleton is what matters
-            return ""
-    return pose_library().add(name or "pose", img, describe)
+            return "", ""
+    return pose_library().add(name.strip(), img, describe, fallback=fallback or "pose")
+
+
+def ref_library(kind: str):
+    from .reflib import RefLibrary
+    return RefLibrary(ROOT, kind)
+
+
+def ref_list(kind: str) -> dict:
+    return {"items": [{"name": p["name"], "description": p["description"], "size": p["size"],
+                       "source": rel_url(p["source"]), "thumb": thumbs.url(ROOT, p["source"])}
+                      for p in ref_library(kind).list()]}
+
+
+def add_ref(kind: str, name: str, image_b64: str, fallback: str = "") -> str:
+    """Save a style or character. The LLM writes its tags and, with no name, names it."""
+    import io
+
+    from PIL import Image
+
+    from .backends import make_backend
+    from .reflib import KINDS
+
+    img = Image.open(io.BytesIO(base64.b64decode(image_b64.split(",", 1)[-1])))
+    img.load()
+    cfg = load_config()
+
+    def describe(image) -> tuple[str, str]:
+        props = {"tags": {"type": "string"}, **({} if name.strip() else {"name": {"type": "string"}})}
+        try:
+            data, _c, _t = make_backend(cfg["judge"]).complete(
+                KINDS[kind]["describe"], [{"text": "IMAGE:"}, {"image": image}],
+                {"type": "object", "properties": props, "required": list(props), "additionalProperties": False},
+                kind, cfg["judge"].get("image_max_side", 512))
+            return data.get("tags", "").strip(), str(data.get("name") or "").strip().lower().replace(" ", "_")
+        except Exception:  # the LLM is optional here: the image is what matters
+            return "", ""
+    return ref_library(kind).add(name.strip(), img, describe, fallback=fallback or kind)
 
 
 _hand_jobs: dict[str, threading.Thread] = {}
@@ -380,7 +455,7 @@ def remove_run(name: str) -> None:
     if name in runner.active_runs() or (manual and leaf in generate_mod.active_runs()):
         raise RuntimeError("that run is in progress")
     if name in generate_mod.busy_targets():
-        raise RuntimeError("an auto-fix of this entry is queued or running; remove it from the queue first")
+        raise RuntimeError("an auto-fix or upscale of this entry is queued or running; remove it from the queue first")
     trash = ROOT / "runs" / "_removed"
     trash.mkdir(exist_ok=True)
     dest = trash / (f"manual_{leaf}" if manual else leaf)
@@ -573,6 +648,11 @@ def service_status() -> dict:
         status["comfy"] = "ok"
         ks = requests.get(f"{cfg['comfy_url']}/object_info/KSampler", timeout=5).json()["KSampler"]["input"]["required"]
         status["samplers"], status["schedulers"] = ks["sampler_name"][0], ks["scheduler"][0]
+        try:
+            up = requests.get(f"{cfg['comfy_url']}/object_info/UpscaleModelLoader", timeout=5).json()
+            status["upscale_models"] = up["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
+        except Exception:
+            status["upscale_models"] = []
     except Exception as e:
         status["comfy"] = ("starting in the background" if launcher["state"] == "starting"
                            else f"not running ({launcher['message'] or type(e).__name__})")
@@ -626,6 +706,7 @@ def public_settings() -> dict:
         "controlnet": cfg.get("controlnet", {}),
         "hands": cfg.get("hands", {}),
         "autofix": autofix.settings(cfg),
+        "upscale": upscale_mod.settings(cfg),
         "loras": {k: v for k, v in cfg.get("loras", {}).items() if k != "civitai_api_key"},
         # Keys never leave the server; Settings only learns whether and where each is set.
         "api_keys": keys.status(),
@@ -749,6 +830,7 @@ class Handler(BaseHTTPRequestHandler):
                 cfg = load_config()
                 est["comfyui"] = comfy_launcher(cfg).status()["state"]
                 est["autofix"] = autofix.settings(cfg)
+                est["upscale"] = upscale_mod.settings(cfg)
                 return self.send_json(est)
             if path == "/api/generate/status":
                 from .generate import status as gen_status
@@ -760,6 +842,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(checkpoints())
             if path == "/api/poses":
                 return self.send_json(poses_list())
+            if path in REF_ROUTES:
+                return self.send_json(ref_list(REF_ROUTES[path]))
             if path == "/api/model-preset":
                 return self.send_json(model_preset(q.get("model", [""])[0],
                                                    q.get("backend", ["ollama"])[0]))
@@ -784,9 +868,36 @@ class Handler(BaseHTTPRequestHandler):
                 runner.stop()
                 return self.send_json({"ok": True})
             if path == "/api/jobs":
-                image = data["image_b64"].split(",", 1)[-1]
-                if Path(data["image_name"]).suffix.lower() not in IMAGE_EXTS:
+                # A reference image, and/or separate style / subject / pose targets
+                # ({role: {"image_b64", "image_name", "text"}}; see targets.py).
+                images, target_spec, auto_libs = {}, {}, {}
+                for role, t in (data.get("targets") or {}).items():
+                    if role not in ("style", "subject", "pose") or not isinstance(t, dict):
+                        continue
+                    if t.get("image_b64"):
+                        if Path(t.get("image_name") or "x.png").suffix.lower() not in IMAGE_EXTS:
+                            return self.send_json({"error": f"the {role} image must be png/jpg/webp"}, 400)
+                        images[role] = (t.get("image_name") or f"{role}.png",
+                                        base64.b64decode(t["image_b64"].split(",", 1)[-1]))
+                    if (t.get("text") or "").strip():
+                        target_spec[role] = {"text": t["text"].strip()}
+                    lib = (t.get("library") or "").strip()
+                    if lib == "auto":  # the loop picks a saved one when the run starts
+                        auto_libs[role] = "auto"
+                    elif lib and role in ("style", "subject") and role not in images:
+                        from .reflib import resolve
+                        got = resolve(ROOT, role, lib)
+                        if not got:
+                            return self.send_json({"error": f"no saved {role} named {lib}"}, 400)
+                        images[role] = ("source.png", Path(got["image"]).read_bytes())
+                        target_spec.setdefault(role, {"text": got["description"]})
+                        target_spec[role]["name"] = got["name"]
+                image = data["image_b64"].split(",", 1)[-1] if data.get("image_b64") else None
+                if image and Path(data.get("image_name") or "").suffix.lower() not in IMAGE_EXTS:
                     return self.send_json({"error": "reference must be png/jpg/webp"}, 400)
+                if not image and not images:
+                    return self.send_json({"error": "an automatic run needs at least one image: style, subject "
+                                                    "or pose"}, 400)
                 description = (data.get("description") or "").strip()
                 spec = {"prompt": data.get("prompt", ""), "negative": data.get("negative", "")}
                 if description:
@@ -795,7 +906,11 @@ class Handler(BaseHTTPRequestHandler):
                 settings = {k: v for k, v in (data.get("settings") or {}).items() if v not in (None, "")}
                 if settings:
                     spec["settings"] = settings
-                folder = queue.add(data.get("name") or "job", data["image_name"], base64.b64decode(image), spec)
+                spec.update(target_spec)
+                if auto_libs:
+                    spec.setdefault("settings", {}).update({f"{r}_library": v for r, v in auto_libs.items()})
+                folder = queue.add(data.get("name") or "job", data.get("image_name"),
+                                   base64.b64decode(image) if image else None, spec, images)
                 return self.send_json({"name": folder.name})
             if path == "/api/loras/suggest":
                 from .backends import make_backend
@@ -817,6 +932,36 @@ class Handler(BaseHTTPRequestHandler):
                                     cfg["judge"].get("image_max_side", 512),
                                     [c for c in cards if c["comfy_name"] in keep])
                 return self.send_json(out)
+            if path == "/api/sampler/suggest":
+                from . import settings_advisor as advisor
+                from .backends import make_backend
+                cfg = load_config()
+                current = data.get("current") or {}
+                if not all(current.get(k) not in (None, "") for k in advisor.FIELDS):
+                    return self.send_json({"error": "steps, cfg, sampler and scheduler are required"}, 400)
+                # The page sends the lists it shows (from ComfyUI); keep the current values if it has none.
+                samplers = [str(s) for s in data.get("samplers") or []] or [current["sampler_name"]]
+                schedulers = [str(s) for s in data.get("schedulers") or []] or [current["scheduler"]]
+                try:
+                    from .workflow import Workflows
+                    ckpt = data.get("checkpoint") or Workflows(ROOT / "workflows").default("checkpoint")
+                except Exception:
+                    ckpt = data.get("checkpoint") or ""
+                loras = tuple((l["name"], float(l.get("strength", 0.8))) for l in data.get("loras") or [])
+                size = data.get("size")
+                out = advisor.suggest_settings(
+                    make_backend(cfg["judge"]), checkpoint=ckpt,
+                    checkpoint_base=checkpoint_base(ckpt, cfg.get("checkpoint_bases")),
+                    samplers=samplers, schedulers=schedulers,
+                    current={"steps": int(current["steps"]), "cfg": float(current["cfg"]),
+                             "sampler_name": current["sampler_name"], "scheduler": current["scheduler"]},
+                    positive=data.get("positive", ""), negative=data.get("negative", ""),
+                    description=data.get("description", ""), mode=data.get("mode") or "txt2img",
+                    denoise=float(data.get("denoise") or 1.0),
+                    size=tuple(size) if isinstance(size, list) and len(size) == 2 else None,
+                    lora_notes=advisor.lora_lines(lora_library(cfg), loras) if loras else "",
+                    max_side=cfg["judge"].get("image_max_side", 512))
+                return self.send_json(out)
             if path == "/api/generate":
                 # Queued, not run here: the page is free again at once (ComfyUI is started,
                 # if needed, when the task's turn comes).
@@ -824,6 +969,9 @@ class Handler(BaseHTTPRequestHandler):
                     data = {**generate_mod.rerun_request(ROOT, data["rerun"]), "estimate": data.get("estimate")}
                 gen_id = generate_mod.start(data)
                 return self.send_json({"id": gen_id, **(generate_mod.status(gen_id) or {})})
+            if path == "/api/upscale":
+                gen_id = generate_mod.start_upscale(data["run"], data.get("images") or [])
+                return self.send_json({"id": gen_id})
             if path == "/api/autofix":
                 gen_id = generate_mod.start_autofix(data["run"], data.get("images") or [])
                 return self.send_json({"id": gen_id})
@@ -837,8 +985,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/prompt/preview":
                 # A description or a reference image is enough: with only an image the
                 # prompter describes what it sees.
-                if not (data.get("description") or "").strip() and not data.get("image_b64"):
-                    return self.send_json({"error": "enter a description or add a reference image"}, 400)
+                if not (data.get("description") or "").strip() and not data.get("image_b64") and not any(
+                        (t or {}).get("image_b64") or ((t or {}).get("text") or "").strip()
+                        for t in (data.get("targets") or {}).values()):
+                    return self.send_json({"error": "enter a description, a style, subject or pose, or add an image"}, 400)
                 return self.send_json(preview_prompt(data))
             if path == "/api/jobs/import":
                 src = (library_root() / data["name"]).resolve()
@@ -879,9 +1029,16 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/loras/refresh":
                 return self.send_json({"started": refresh_loras()})
             if path == "/api/poses":
-                return self.send_json({"name": add_pose(data.get("name", ""), data["image_b64"])})
+                return self.send_json({"name": add_pose(data.get("name") or "", data["image_b64"],
+                                                         data.get("fallback") or "")})
             if path == "/api/poses/remove":
                 pose_library().remove(data["name"])
+                return self.send_json({"ok": True})
+            if path in REF_ROUTES:
+                return self.send_json({"name": add_ref(REF_ROUTES[path], data.get("name") or "", data["image_b64"],
+                                                       data.get("fallback") or "")})
+            if path.removesuffix("/remove") in REF_ROUTES and path.endswith("/remove"):
+                ref_library(REF_ROUTES[path.removesuffix("/remove")]).remove(data["name"])
                 return self.send_json({"ok": True})
             if path == "/api/runs/refine-hands":
                 return self.send_json(refine_hands_run(data["run"]))
@@ -938,6 +1095,19 @@ def autofix_view(d: Path) -> dict:
                      "fixed_thumb": thumbs.url(ROOT, d / r["image"]) if r.get("image") and (d / r["image"]).exists() else None,
                      "issues_found": r.get("issues_found") or [], "issues_left": r.get("issues_left") or [],
                      "rounds": r.get("rounds") or [], "finished": r.get("finished")}
+    return out
+
+
+def upscale_view(d: Path) -> dict:
+    """A run's upscale results for History: {image name: {state, upscaled URL, size, ...}}."""
+    out = {}
+    for name, r in upscale_mod.load_results(d).items():
+        f = d / r["image"] if r.get("image") else None
+        ok = bool(f and f.exists())
+        out[name] = {"state": r.get("state"), "error": r.get("error"), "source": r.get("source"),
+                     "upscaled_url": rel_url(f) if ok else None, "upscaled_thumb": thumbs.url(ROOT, f) if ok else None,
+                     "size": r.get("size"), "from_size": r.get("from_size"), "model": r.get("model"),
+                     "seconds": r.get("seconds"), "finished": r.get("finished")}
     return out
 
 

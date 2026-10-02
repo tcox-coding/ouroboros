@@ -212,6 +212,11 @@ def hand_boxes(pose: dict, size: tuple[int, int], min_points: int = 12, pad: flo
     return out
 
 
+def slugify(name: str) -> str:
+    """A folder-safe pose name: letters, digits, spaces, _ . - (others become _)."""
+    return re.sub(r"[^A-Za-z0-9 _.-]+", "_", name or "").strip(" ._")
+
+
 class PoseLibrary:
     """poses/<name>/{source.png, pose.json, preview.png}."""
 
@@ -244,13 +249,17 @@ class PoseLibrary:
             raise FileNotFoundError(name)
         return d
 
-    def add(self, name: str, image: Image.Image, describe=None) -> str:
-        """Detect the pose in `image` and save it. describe(image) -> short pose tags
-        (optional; the prompt writer and judge use them). Returns the saved name."""
+    def add(self, name: str, image: Image.Image, describe=None, fallback: str = "pose") -> str:
+        """Detect the pose in `image` and save it. describe(image) -> short pose tags, or
+        (tags, suggested name) (optional; the prompt writer and judge use the tags). With no
+        `name`, the suggested name is used, else `fallback`. Returns the saved name."""
         pose = detect(image)
         if not has_body(pose):
             raise ValueError("no person found in that image")
-        base = re.sub(r"[^A-Za-z0-9 _.-]+", "_", name).strip(" ._") or "pose"
+        img = to_rgb(image)
+        described = describe(img) if describe else ""
+        description, suggested = described if isinstance(described, tuple) else (described, "")
+        base = (slugify(name) or slugify(suggested) or slugify(fallback) or "pose")[:60].strip(" ._-") or "pose"
         self.root.mkdir(parents=True, exist_ok=True)
         slug, n = base, 2
         while (self.root / slug).exists():
@@ -258,9 +267,8 @@ class PoseLibrary:
         d = self.root / slug
         d.mkdir()
         try:
-            img = to_rgb(image)
             img.save(d / "source.png")
-            pose["description"] = describe(img) if describe else ""
+            pose["description"] = description
             (d / "pose.json").write_text(json.dumps(pose), encoding="utf-8")
             w, h = img.size
             s = 512 / max(w, h)

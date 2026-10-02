@@ -90,6 +90,8 @@
     "confirm_pass": true,
     "penalize_extras": true,
     "prompt_sees_reference": true,
+    "ai_settings": false,
+    "upscale": false,
     "history_keep_rounds": 2,
     "refine_gate": {
       "identity": 7,
@@ -106,6 +108,12 @@
   "queue": {
     "parallel_jobs": 2,
     "llm_parallel": 4
+  },
+  "upscale": {
+    "model": "",
+    "scale": 1.5,
+    "denoise": 0.35,
+    "max_side": 2560
   },
   "defaults": {
     "mode": "txt2img",
@@ -160,7 +168,10 @@
     "preset": "PLUS (high strength)",
     "weight": 0.6,
     "weight_type": "linear",
-    "end": 1.0
+    "end": 1.0,
+    "subject_weight": 0.6,
+    "style_weight": 0.5,
+    "style_weight_type": "style transfer"
   },
   "autofix": {
     "max_rounds": 2,
