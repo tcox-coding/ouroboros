@@ -2,7 +2,7 @@
 ComfyUI has, and fall back to the current values when the answer is unusable."""
 import pytest
 
-from conftest import FakeLibrary
+from fakes import FakeLibrary
 from ouroboros import settings_advisor as advisor
 
 CURRENT = {"steps": 30, "cfg": 5.5, "sampler_name": "dpmpp_2m", "scheduler": "karras"}

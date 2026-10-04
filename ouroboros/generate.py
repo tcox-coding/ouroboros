@@ -133,10 +133,18 @@ def start(req: dict) -> str:
                     has_reference=bool(req.get("style_b64")))
 
 
+def _image_names(folder: Path, images: list[str]) -> list[str]:
+    """The names that are images directly in `folder`. A name with a path in it
+    ("../../config.json") is refused: the result is written next to its source."""
+    return [n for n in images
+            if isinstance(n, str) and n == Path(n).name and not n.startswith(".")
+            and Path(n).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp") and (folder / n).is_file()]
+
+
 def start_autofix(run: str, images: list[str]) -> str:
     """Queue auto-fix for images of a History entry (run: "manual/<run>" or a loop run)."""
     target = _CTX["fix_target"](run)            # fails now, not later, for a bad run name
-    names = [n for n in images if (target["dir"] / n).is_file()]
+    names = _image_names(target["dir"], images)
     if not names:
         raise FileNotFoundError("no such image in that run")
     return _enqueue("autofix", {"run": run, "images": names},
@@ -148,7 +156,7 @@ def start_upscale(run: str, images: list[str]) -> str:
     """Queue upscaling for images of a History entry (each image's auto-fixed version is
     upscaled if it has one; see upscale.best_version)."""
     target = _CTX["fix_target"](run)
-    names = [n for n in images if (target["dir"] / n).is_file()]
+    names = _image_names(target["dir"], images)
     if not names:
         raise FileNotFoundError("no such image in that run")
     return _enqueue("upscale", {"run": run, "images": names},

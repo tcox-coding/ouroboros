@@ -14,6 +14,7 @@ already starts close to it: fewer rounds.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .params import drop_negative_conflicts, norm_tag, split_tags
@@ -37,6 +38,7 @@ Negative prompt: things to avoid (quality problems, wrong styles, and anything t
 contradicts the description, e.g. other hair colours, extra people, props).
 
 Reply with JSON only."""
+
 
 SCHEMA = {
     "type": "object",
@@ -62,6 +64,26 @@ def _restore(original: str, result: str, dropped: list[str]) -> str:
     return result.strip().rstrip(",") + ",\n" + ", ".join(missing)
 
 
+NEGATIVE_ONLY = re.compile(r"^\(?(score_[1-6]|source_(anime|furry|pony)|worst quality|low quality|lowres|"
+                           r"bad anatomy|bad hands|watermark|signature)(:[\d.]+\)?)?$", re.I)
+
+
+def _problems(positive: str, negative: str) -> list[str]:
+    """What's structurally wrong with a written prompt pair (it happened in testing: a
+    model put the whole negative into the positive and left the negative empty, and the
+    renders scored ~30 instead of ~45)."""
+    out = []
+    if not negative.strip():
+        out.append("the negative prompt is empty; it must hold the things to avoid")
+    leaked = [t for t in split_tags(positive) if NEGATIVE_ONLY.match(t.strip())]
+    if leaked:
+        out.append("the positive contains negative-prompt tags (" + ", ".join(leaked[:6]) + "); they belong "
+                   "only in the negative")
+    if not positive.strip():
+        out.append("the positive prompt is empty")
+    return out
+
+
 def write_prompt(backend, description: str, positive: str = "", negative: str = "",
                  style_positive: str = "", style_negative: str = "",
                  reference: Path | None = None, max_side: int = 512, lora_notes: str = "",
@@ -80,21 +102,23 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
         if not description.strip():
             parts[0] = {"text": "DESCRIPTION\n(none: write the prompt from the TARGETS below)"}
     if lora_notes:
-        parts.append({"text": "LORAS that will be active (put each one's trigger words in the positive prompt "
-                              "exactly as written; write the prompt so it works with what each LoRA does - "
-                              "its style, character, pose or concept - and prefer the wording its example "
-                              "prompt uses; never write LoRA names or <lora:...> tags):\n" + lora_notes})
+        parts.append({"text": "LORAS that will be active (put each one's \"trigger word\" in the positive prompt "
+                              "exactly as written, and only those; write the prompt so it works with what each "
+                              "LoRA does - its style, character, pose or concept - but describe the reference's "
+                              "look, not the LoRA's; never write LoRA names or <lora:...> tags):\n" + lora_notes})
     if pose_note:
         parts.append({"text": "POSE for this job (a ControlNet imposes it; it replaces the reference's pose, so "
                               "describe this pose and framing, not the reference's):\n" + pose_note})
-    if positive.strip() or negative.strip():
+    if positive.strip():
         parts.append({"text": (
             "MERGE the description into the user's prompts below. Keep every user tag (quality, style, "
             "LoRA trigger words, layout) unless the description contradicts it; list removed tags in "
             "\"dropped\". Add the tags the description needs.\n\n"
-            f"USER POSITIVE PROMPT\n{positive.strip() or '(empty)'}\n\n"
+            f"USER POSITIVE PROMPT\n{positive.strip()}\n\n"
             f"USER NEGATIVE PROMPT\n{negative.strip() or '(empty)'}")})
     else:
+        # A user negative with no positive still needs the workflow's style examples for
+        # the positive: merging alone left the score tags and trigger words out.
         parts.append({"text": (
             "Write new prompts. Match the TAG STYLE of these example prompts from the user's workflow: "
             "copy their quality and style tags (e.g. score tags, style/LoRA trigger words, rendering style) "
@@ -102,7 +126,9 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
             "style negatives; it was written for a different subject, so leave out its clothing, pose and "
             "background tags, and never negate anything the description asks for.\n\n"
             f"EXAMPLE POSITIVE\n{style_positive.strip() or '(none)'}\n\n"
-            f"EXAMPLE NEGATIVE\n{style_negative.strip() or '(none)'}")})
+            f"EXAMPLE NEGATIVE\n{style_negative.strip() or '(none)'}")
+            + (f"\n\nUSER NEGATIVE PROMPT (keep every tag of it in the negative; list any you remove in "
+               f"\"dropped\")\n{negative.strip()}" if negative.strip() else "")})
     if reference is not None:
         parts += [{"text": "REFERENCE IMAGE the result should resemble" + (
                        ":" if from_image else " (use it for details the description leaves out; the "
@@ -110,8 +136,22 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
                   {"image": reference}]
 
     data, _cost, _tokens = backend.complete(INSTRUCTIONS, parts, SCHEMA, "prompt", max_side)
+    problems = _problems(data.get("positive", ""), data.get("negative", ""))
+    if problems:  # one more try, told what was wrong
+        retry = parts + [{"text": "Your previous answer had these problems; fix them and answer again:\n- "
+                                  + "\n- ".join(problems) + "\nPREVIOUS POSITIVE\n" + data.get("positive", "")[:1500]
+                                  + "\nPREVIOUS NEGATIVE\n" + data.get("negative", "")[:800]}]
+        again, _cost, _tokens = backend.complete(INSTRUCTIONS, retry, SCHEMA, "prompt", max_side)
+        if len(_problems(again.get("positive", ""), again.get("negative", ""))) < len(problems):
+            data = again
     dropped = [t for d in data.get("dropped") or [] for t in split_tags(d)]
     out_pos, out_neg = data.get("positive", "").strip(), data.get("negative", "").strip()
+    leaked = [t for t in split_tags(out_pos) if NEGATIVE_ONLY.match(t.strip())]
+    if leaked:  # still there after the retry: move them where they belong
+        gone = {norm_tag(t) for t in leaked}
+        out_pos = "\n".join(", ".join(t.strip() for t in line.split(",") if t.strip() and norm_tag(t) not in gone)
+                             for line in out_pos.splitlines()).strip()
+        out_neg = ", ".join(leaked) + ("\n" + out_neg if out_neg else "")
     if positive.strip():
         out_pos = _restore(positive, out_pos, dropped)
     if negative.strip():

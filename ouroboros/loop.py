@@ -283,7 +283,7 @@ def set_variants(p: GenParams, previous: GenParams, n: int, managed: set[str], o
     return out
 
 
-def resolve_loras(loras: tuple, index: dict, installed: list[str] | None, log) -> tuple:
+def resolve_loras(loras: tuple, index: dict, installed: list[str] | None, log, what: str = "workflow") -> tuple:
     """The workflow's saved LoRAs, pointed at where they are now. A workflow saved
     before the library was reorganised (or on another machine) names LoRAs by an old
     path, e.g. Pony\\styles\\X.safetensors for what is now Pony/styles/artists/x/X.safetensors;
@@ -303,10 +303,10 @@ def resolve_loras(loras: tuple, index: dict, installed: list[str] | None, log) -
         if found is None and installed is None:
             found = name  # can't check: keep it as saved
         if found is None:
-            log(f"workflow LoRA {lora_stem(name)} isn't installed; leaving it out")
+            log(f"{what} LoRA {lora_stem(name)} isn't installed; leaving it out")
             continue
         if found != name:
-            log(f"workflow LoRA {lora_stem(name)} found at {found.replace(chr(92), '/')}")
+            log(f"{what} LoRA {lora_stem(name)} found at {found.replace(chr(92), '/')}")
         if norm(found) not in seen:
             seen.add(norm(found))
             out.append((found, w))
@@ -381,7 +381,9 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     # 0a. Checkpoint and LoRAs. "auto": the LLM picks style LoRAs from the managed folders
     # (Settings -> LoRAs) by comparing the reference with each LoRA's Civitai examples;
     # LoRAs outside those folders stay as the workflow has them. "workflow": the saved
-    # workflow's LoRAs, strengths tunable. "off": none.
+    # workflow's LoRAs, strengths tunable. "fixed": exactly the LoRAs chosen by hand
+    # (settings.loras, e.g. from Home) for the whole job: strengths tunable, never swapped,
+    # added or dropped. "off": none.
     lcfg = cfg.get("loras", {})
     checkpoint = job.settings.get("checkpoint") or cfg.get("defaults", {}).get("checkpoint") or None
     ckpt_name = checkpoint or flows.default("checkpoint")
@@ -395,6 +397,14 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         installed = None
     workflow_loras = resolve_loras(flows.default_loras(), index, installed, log)
     start_loras: tuple = () if lora_mode == "off" else workflow_loras
+    fixed_loras = lora_mode == "fixed"
+    if fixed_loras:
+        chosen = tuple((str(l["name"]), float(l.get("strength") if l.get("strength") is not None else 0.8))
+                       for l in job.settings.get("loras") or [] if isinstance(l, dict) and l.get("name"))
+        start_loras = resolve_loras(chosen, index, installed, log, "selected")
+        log("LoRAs: only the selected ones for the whole job: "
+            + (", ".join(f"{lora_stem(n)} {w:g}" for n, w in start_loras) or "none"))
+        max_loras = max(max_loras, len(start_loras))
     alternatives: list[tuple[str, float]] = []
     lora_pick: dict | None = None
     if lora_mode == "auto" and index:
@@ -418,6 +428,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     lora_choices = {lora_stem(n): n for n in
                     dict.fromkeys(active_managed + [n for n, _ in alternatives] + shortlisted
                                   + [n for n, _ in workflow_loras if n in index])} if lora_mode != "off" else {}
+    if fixed_loras:  # only the selected ones, so their strengths can be tuned
+        lora_choices = {lora_stem(n): n for n in active_managed}
     managed_set = set(lora_choices.values())
 
     def usual_weight(name: str) -> float:
@@ -430,7 +442,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     # Round 1 tries the shortlisted LoRAs that weren't picked too, at their usual weight.
     alternatives = alternatives + [(n, usual_weight(n)) for n in shortlisted
                                    if n not in {a for a, _ in alternatives} | set(active_managed)]
-    switch_rounds = int(lc.get("lora_switch_rounds") or 3)
+    switch_rounds = 0 if fixed_loras else int(lc.get("lora_switch_rounds") or 3)  # 0: the set never changes
     lora_menu = None
     if lora_choices:
         lora_menu = {"menu": "\n".join("- " + library.card(index[n], detail=False) for n in lora_choices.values()),
@@ -883,6 +895,9 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         phase = edit.get("phase", phase)
         params = enforce_reference_rules(apply_edit(params_of[base], edit, samplers, schedulers,
                                                     lora_choices, max_loras), lc)
+        if fixed_loras and {n for n, _ in params.loras} != {n for n, _ in params_of[base].loras}:
+            log("the edit would have dropped a selected LoRA; keeping them all at their strengths")
+            params = replace(params, loras=params_of[base].loras)
         if not edit.get("keep_seed") and lc.get("controlled_seed", True):
             # The first candidate keeps the seed of the image the edit builds on, so its
             # score shows what the edit itself did (a controlled comparison); the others

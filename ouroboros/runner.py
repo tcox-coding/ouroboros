@@ -177,7 +177,8 @@ class Runner:
             if kind == "stage":
                 cur.update(round=e["round"], phase=e["phase"], stage=e["stage"])
             elif kind == "setup":
-                cur["setup"] = {k: e.get(k) for k in ("checkpoint", "checkpoint_base", "lora_mode",
+                cur["setup"] = {k: e.get(k) for k in ("checkpoint", "checkpoint_base", "judge_backend", "judge_model",
+                                                      "lora_mode",
                                                       "start_loras", "lora_pick", "incompatible_loras",
                                                       "pose")}
             elif kind == "size" and cur.get("setup") is not None:

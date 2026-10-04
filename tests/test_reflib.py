@@ -6,7 +6,7 @@ from PIL import Image
 
 from ouroboros import reflib
 from ouroboros.pose_picker import pick_item
-from conftest import FakeComfy
+from fakes import FakeComfy
 
 
 class Backend:

@@ -208,9 +208,10 @@ the description locks the prompt boxes, text in either prompt box locks the desc
 into, so you can see and edit it. With a reference image and no description at all, the prompt is
 written from the image.
 
-**Targets: Style, Subject, Pose.** Each has its own panel: words, and behind a checkbox an
-image, a saved one (Styles / Characters / Poses tabs) or **AI picks**. Nothing behind the box
-counts while it is unticked. See *Three targets* below. As in a job, img2img starts from the
+**Targets: Style, Subject, Pose.** Each has its own panel: behind a checkbox, an image, a
+saved one (Styles / Characters / Poses tabs) or **AI picks**. Nothing behind the box counts
+while it is unticked. Words about any of them go in the description, which the prompt writer
+reads alongside the images. See *Three targets* below. As in a job, img2img starts from the
 subject (else style) image centre-cropped to the output size (transparency flattened onto
 white), unless an IP-Adapter carries it; **auto** size follows that image's shape, or with
 none, the pose's.
@@ -496,7 +497,14 @@ Flux checkpoints are greyed out, since this workflow is SDXL.
   workflow.
 - **workflow**: the LoRAs switched on in the saved workflow; the judge may tune their
   strengths.
+- **fixed**: exactly the LoRAs chosen by hand (`settings.loras`, `[{"name", "strength"}]`),
+  for the whole job: none are picked, swapped, added or dropped (the workflow's own are
+  left out too); the judge may only tune their strengths. **Run automatically** on Home
+  uses this whenever LoRAs are selected there.
 - **off**: no LoRAs.
+
+Selected LoRAs are also what **Write prompts** writes for: the prompt writer gets each one's
+description, strength, trigger words and an example prompt (`lora_picker.prompt_notes`).
 
 **What the picker knows about each LoRA** (Settings -> LoRAs -> *Refresh from files and
 Civitai*; cached in `cache/`, so jobs never wait on the network):
@@ -559,13 +567,20 @@ Every candidate is judged in its own call, and a round's calls now run side by s
 twelve. With the local pre-filter installed (torch, torchvision, transformers), only the top
 `send_top_k` go to the judge, except in rounds that compare LoRA sets or strengths.
 
-**Trigger words:** each active LoRA's main trigger word (the first listed) is added to
-the prompt at render time. A switched-off LoRA's trigger words are removed only when they
+**Trigger words:** each active LoRA's own trigger word (`loras.lora_trigger`) is added to
+the prompt at render time. "Own" matters: a LoRA's listed trigger words often come from its
+training captions, and the first one can be an ordinary tag (`long_hair` on a cartoon style
+LoRA, `female` on an artist style). Added to every render, `long_hair` turned short-haired
+characters long-haired. A trigger counts when it is a made-up token (`p0seA`, `PuffyNips`,
+`legsbehindhead`, `WHF`) or names the LoRA (shares a word, or a word's start, with its file
+name or title: `flat color` for FlatColor, `helixart` for helix); of the first three listed,
+the first that qualifies is used. 38 of the 517 LoRAs here have none, and get nothing added. A switched-off LoRA's trigger words are removed only when they
 are made-up tokens no other LoRA lists (`p0seA`, `RSV1.2`, `melkor_style`, `PuffyNips`):
 many LoRAs list ordinary tags as triggers (`1girl`, `Kiss`, `69`, `full body`), and those
 stay, as do your own words. Some LoRAs list many (Melkor lists character names,
-princess_xl every princess), so only the main one is automatic. The prompt writer sees them all, plus each active LoRA's example
-prompt, and uses the relevant ones. LoRA picks, reasons and alternatives are on the Run
+princess_xl every princess), so only the main one is automatic. The prompt writer is given
+each LoRA's own trigger word (or, for one without, the tags it was trained with "to use only
+where they fit") and its example prompt for wording only. LoRA picks, reasons and alternatives are on the Run
 tab and in History.
 
 The LoRAs tab shows the library: example image, base model and whether it suits the
@@ -633,6 +648,25 @@ LoRAs from the whole catalog: the selected ones stay, count toward `loras.max_lo
 are shown to it so it adds only what they lack and nothing that fights them (a second style
 or pose). The prompts are then written for the full set. A generation whose prompt the LLM
 writes at render time (description only) is written for its selected LoRAs the same way.
+
+**What the writer is told** (`prompter.INSTRUCTIONS`) was tested by rendering written
+prompts and judging the renders against their references (three references, two prompts
+each, three seeds). A stricter rewrite was tried first: Danbooru tags only, 30-60 tags, at
+most five weights, and "colour every garment". It scored lower (51.7 against 56.4 with
+Qwen3.8-27B writing and judging). The shorter prompts lost the weighted colour tags, and the
+red shirt came out black, white or gray in every seed. So the original, more detailed
+wording stays (40-80 tags, with weights on the hair, the main garment colours and the pose).
+What helped regardless of wording is in code: only each LoRA's own trigger word is added
+(`loras.lora_trigger`; a caption tag such as `long_hair` used to be added as a "trigger"),
+and the checks below.
+
+Two checks run on every answer (`prompter._problems`): an empty negative, and negative-only
+tags (`score_4`, `lowres`, `watermark`...) in the positive. Once, a model wrote the whole
+negative into the positive and left the negative empty; those renders scored ~30 where the
+others scored ~45. A bad answer is sent back once with what was wrong; if the second is no
+better, the stray tags are moved to the negative. A user negative with no positive still gets
+the workflow's example prompts (it used to switch the writer to merging, which left the
+score tags and trigger words out of the positive).
 
 ### Starting sampler settings from the LLM
 The judge already changes steps, cfg, sampler and scheduler from round 2 on (they're in
@@ -802,6 +836,23 @@ Each run uploads into its own ComfyUI input subfolder, so jobs can't overwrite e
 images. In a test with a fake 1 s LLM and fake renders, 3 jobs took 22 s side by side and
 27 s one after another; the slower the LLM, the bigger the gain.
 
+### Live tests: the app and the real judge
+
+`tests/live/` sends the judge what the app sends and checks that what comes back is usable:
+JSON in the schema, scores in range, an edit `apply_edit` turns into valid parameters, LoRA
+choices only from the menu, prompts that pass the checks above, picks from the menu (and no
+substitute character), auto-fix inspections and reviews, and two whole two-round jobs with
+ComfyUI replaced by labelled eval images (one ends on a confirmed pass, one runs out of
+rounds). They use the model in config.json and cost a few cents, so they are skipped unless
+asked for:
+
+    OUROBOROS_LIVE=1 .venv/bin/python -m pytest tests/live -v
+    OUROBOROS_LIVE=1 OUROBOROS_LIVE_MODEL=<another model> .venv/bin/python -m pytest tests/live -v
+
+The second form tries another model on the same backend without editing config.json. The
+first test that sends an image fails at once, with the provider's message, for a text-only
+model (e.g. Sao10K/L3.1-70B-Euryale-v2.2: "does not accept image input").
+
 ### Comparing judge models
 `python -m ouroboros eval MODEL [MODEL ...]` makes each model judge the same labelled images
 (`eval/judge_set.json`, images in `eval/images/`) the way the loop does, each twice:
@@ -890,6 +941,69 @@ clearly-good images score 62-69, so a job can stop as soon as it reaches that cl
 One flawed image (shoulder tabs the reference lacks) averages 61 and has touched 66 on a
 single look, which is what the fresh-look confirmation is there to catch. Recalibrate
 after changing judges - `python -m ouroboros eval` prints the bands.
+
+#### DeepInfra vision models that write adult prompts (2026-10-03)
+Of the 51 vision models DeepInfra lists, 29 wrote both a nude and an explicit sex prompt
+for clearly adult characters (a text-only probe). Several refused both, among them
+**DeepSeek-V4.1-Flash** (the old default judge), Claude Haiku 4.5, Mistral-Small 3.2,
+Gemma 3 27B and most Qwen3.5 models. The Qwen3.6 models and Qwen3-VL-235B wrote the nude
+prompt but refused the sex one. Ten of the 29 were then benchmarked
+with the loop's own judge call over the labelled set (11 images; `b_topless` left out),
+temperature 0, 512 px, five looks per image for the finalists. **Margin** is the lowest
+score of any good image minus the highest score of any flawed one, over every look:
+positive means one threshold separates them every time.
+
+| model, settings | margin (review / confirm) | threshold | s/call | $ per 1000 calls |
+|---|---|---|---|---|
+| **gemma-4-26B-A4B-it**, no reasoning | **+2.6 / +8.2** | 80 | 11 | 0.32 |
+| gemma-4-31B-it-turbo, no reasoning | -0.4 / +3.9 | 79 | 20 | 0.31 |
+| DeepSeek-V4-Flash-Vision-Exp, reasoning none | -1.3 / -2.1 | 69 | **3** | 0.40 |
+| MiMo-V2.6-Flash, reasoning none | -2.6 / 0.0 | 71 | 4 | **0.13** |
+| Qwen3.8-27B, reasoning none | -3.5 / -8.3 | 66 | 12 | 1.37 |
+| MiniMax-M3, reasoning none | -3.9 | 62 | 15 | 0.72 |
+| GLM-5.3-Flash, reasoning none | -4.4 / -6.1 | 62 | 32 | 0.34 |
+| gemini-3.1-flash-lite | -5.3 | 73 | 13 | 5.37 |
+| Seed-2.0-mini (plain JSON only) | -14 | 54 | 16 | 0.39 |
+| Llama-4-Scout | -15 (pairs 64-82%) | - | 12 | 0.39 |
+
+What carried over across models:
+- **Turn reasoning off** where the model allows it (`reasoning_effort: "none"`). On judging
+  it was as accurate or better, and 3-15x faster and cheaper. Qwen3.8 went from 60 s and
+  $6.50 per 1000 calls to 12 s and $1.37; DeepSeek-Vision from 46 s to 3 s. Turning it *on*
+  for Gemma 4 (`low`) took 110 s a call for no gain.
+- **Temperature 0** beat the model default for every model tried (smaller spread).
+- **768 px images didn't help**: margins got slightly worse at 1.2-1.5x the input cost.
+- **Thresholds differ by 25 points between models** (Gemma's good images average ~88,
+  MiniMax's ~66), so each preset now carries its own `loop.threshold`, and choosing a
+  model in Settings fills it in.
+
+`model_presets.json` holds these settings per model. The DeepInfra backend also had two
+format bugs fixed along the way. A model that can't take a JSON schema may say so with a
+405 (gemma-4-31B-it-Ultra), with a 500 InvalidParameter, or with a bare 500 every time
+(Seed-2.0-mini). The backend now steps down to plain JSON mode and then to no format. A
+plain-JSON answer isn't held to the schema, so the judge drops malformed candidates and
+asks once more.
+
+#### The top five in real rendered jobs (2026-10-04)
+Each of the five best judges ran 5 complete jobs (references `bench_01`, `04`, `06`, `08`,
+`10`; the user's loop settings, with the AI picking LoRAs; each model writing the prompts,
+picking LoRAs and judging, at its preset's threshold). Every job's final image was then
+scored by two outside referees (Claude Sonnet 5.5 and Gemini 2.5 Pro, the confirm call, two
+looks each; the two agreed at r = 0.81):
+
+| judge | referee score | best on | passed | rounds | min/job | $/job | own score tracks referee |
+|---|---|---|---|---|---|---|---|
+| **gemma-4-31B-it-turbo** | **55.2** | **4 of 5** | 3/5 | 4.0 | 18 | 0.018 | 0.74 |
+| gemma-4-26B-A4B-it | 55.1 | 1 of 5 | 2/5 | 6.2 | 18 | 0.019 | -0.03 |
+| DeepSeek-V4-Flash-Vision-Exp | 52.1 | 0 | 4/5 | 4.2 | **11** | 0.030 | 0.73 |
+| MiMo-V2.6-Flash | 44.7 | 0 | 4/5 | 5.8 | 19 | 0.018 | 0.63 |
+| Qwen3.8-27B | 43.0 | 0 | 4/5 | 4.0 | 14 | 0.056 | 0.52 |
+
+Rendering, not the LLM, sets the pace: about 25 s an image on a 2080 Ti. On the labelled set
+the two Gemmas looked equal, but in real jobs the 31B's own scores followed the referees'
+and the 26B's didn't, so at 80 the 26B kept going on images no better than the ones it had
+already rejected. MiMo's LoRA pick sends 6 images and it takes at most 4; the DeepInfra
+backend now learns a model's limit from its error and leaves the extra images out.
 
 ### A second opinion for the pass check (judge.confirm_model)
 Set `judge.confirm_model` (Settings -> Judge -> *Second opinion for the pass check*) to

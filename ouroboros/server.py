@@ -251,7 +251,8 @@ def run_detail(name: str) -> dict:
             "threshold": info.get("threshold"),
             "prompt": prompt, "reproduce": reproduce_info(d, summary, info),
             "hands": hands_results(d, summary),
-            "setup": {**{k: info.get(k) for k in ("checkpoint", "checkpoint_base", "lora_mode", "start_loras",
+            "setup": {**{k: info.get(k) for k in ("checkpoint", "checkpoint_base", "judge_backend", "judge_model",
+                                                  "lora_mode", "start_loras",
                                                   "lora_pick", "incompatible_loras", "size", "size_setting", "pose")},
                       "pose_url": rel_url(d / info["pose"]["control"]) if (info.get("pose") or {}).get("control")
                       else None} if info else None}
@@ -640,7 +641,9 @@ def model_preset(model: str, backend: str = "ollama") -> dict | None:
 
 def service_status() -> dict:
     cfg = load_config()
-    status = {"backend": cfg["judge"]["backend"]}
+    status = {"backend": cfg["judge"]["backend"],
+              "model": cfg["judge"].get(cfg["judge"]["backend"], {}).get("model") or "",
+              "confirm_model": cfg["judge"].get("confirm_model") or ""}
     launcher = comfy_launcher(cfg).status()
     status["comfyui"] = {k: launcher[k] for k in ("state", "message")}
     try:

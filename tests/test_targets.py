@@ -129,7 +129,7 @@ def home_run_targets(tmp_path, monkeypatch):
     import io
     import ouroboros.generate as gen
     import ouroboros.workflow as wf
-    from conftest import FakeComfy
+    from fakes import FakeComfy
     src = Path(__file__).resolve().parent.parent / "workflows"
     (tmp_path / "workflows").mkdir()
     for f in ("example_workflow.json", "nodes.example.json"):

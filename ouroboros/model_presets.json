@@ -2,12 +2,282 @@
   "_comment": "Recommended judge settings per vision model. Choosing a model in Settings fills these in (the first preset that fits both the backend in use and the model name wins; a preset without 'backends' fits any). 'prompt_token_budget' is an absolute cap on the judge prompt: long-context accuracy starts dropping around 10-20% of a model's window and the middle of a long prompt is recalled worst, so prompts are kept short and the key parts sit at the start and end.",
   "presets": [
     {
+      "match": "^google/gemma-4-26B-A4B",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Gemma 4 26B-A4B (DeepInfra), best judge tested",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): the only model whose every good-image score stayed above every flawed one (review margin +2.6, confirm +8.2); 11 s a call, $0.32 per 1000 calls. It doesn't reason by default; reasoning_effort low made it 10x slower and 5x dearer for no gain, and 768 px images didn't help. Writes adult prompts. It scores high, so the threshold is 80. In 5 real rendered jobs (2026-10-04) its final images tied for best with an outside referee (55.1 of 100), but its own scores didn't track the referee's (correlation -0.03) and at 80 it passed only 2 of 5 jobs, running ~6 rounds on average.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 262144,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 80
+        }
+      }
+    },
+    {
+      "match": "^google/gemma-4-31B-it-turbo",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Gemma 4 31B turbo (DeepInfra)",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): as accurate as the 26B (confirm margin +3.9) but about twice as slow (20 s a call), $0.31 per 1000 calls. Leave reasoning off (low: 108 s a call). Writes adult prompts. Threshold 79. Best in 5 real rendered jobs (2026-10-04): best final image on 4 of 5 references by an outside referee (55.2 of 100), passed 3 of 5 at 79 in ~4 rounds, 18 min and $0.018 a job, and its own scores tracked the referee's (correlation 0.74).",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 262144,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 79
+        }
+      }
+    },
+    {
+      "match": "^deepseek-ai/DeepSeek-V4-Flash-Vision",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "DeepSeek V4 Flash Vision (DeepInfra), fastest",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 3 s a call, $0.40 per 1000 calls, every labelled pair right; good and flawed scores overlap by ~1-2 points, so a borderline image can pass. With reasoning on it was 15x slower, 10x dearer and less consistent. Writes adult prompts (unlike DeepSeek-V4.1-Flash). Threshold 69. In 5 real rendered jobs (2026-10-04): third (referee 52.1), fastest jobs (11 min), $0.030 a job, passed 4 of 5.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 1048576,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 69
+        }
+      }
+    },
+    {
+      "match": "^XiaomiMiMo/MiMo-V2.6-Flash",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "MiMo V2.6 Flash (DeepInfra), cheapest",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 3.6 s a call, $0.13 per 1000 calls; ranks every labelled pair right but names the flaw in 83% of looks (others 100%). Writes adult prompts. Threshold 71. Takes at most 4 images a request (the backend leaves the rest out). In 5 real rendered jobs (2026-10-04): referee 44.7 of 100, well behind the Gemmas.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 1048576,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 71
+        }
+      }
+    },
+    {
+      "match": "^Qwen/Qwen3\\.8",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Qwen3.8 27B (DeepInfra)",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 12 s a call, $1.37 per 1000 calls, as accurate as with reasoning (60 s, $6.50 per 1000). Its scores run low and good and flawed images overlap by ~3-8 points. Writes adult prompts. Threshold 66. In 5 real rendered jobs (2026-10-04): last by the referee (43.0 of 100) and the dearest ($0.056 a job).",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 262144,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 66
+        }
+      }
+    },
+    {
+      "match": "^MiniMaxAI/MiniMax-M3",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "MiniMax M3 (DeepInfra)",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 15 s a call, $0.72 per 1000 calls; accurate rankings but scores run low (good images ~66). Writes adult prompts. Threshold 62.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 524288,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 62
+        }
+      }
+    },
+    {
+      "match": "^zai-org/GLM-5\\.3-Flash",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "GLM 5.3 Flash (DeepInfra)",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): 30 s a call, $0.34 per 1000 calls, and often 'model busy' (429). Ranks pairs right but one look at an image can move 8 points. Writes adult prompts. Threshold 62.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 1048576,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 62
+        }
+      }
+    },
+    {
+      "match": "^google/gemini-3\\.1-flash-lite",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Gemini 3.1 Flash-Lite (DeepInfra)",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): 13 s a call but $5.37 per 1000 calls (17x Gemma 4 26B) for no better judging. Writes adult prompts. Threshold 73.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 1000000,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 73
+        }
+      }
+    },
+    {
+      "match": "^ByteDance/Seed-2\\.0-mini",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Seed 2.0 mini (DeepInfra), not recommended",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): no JSON-schema support (answers in plain JSON mode), good and flawed images overlap by 10-14 points; 16 s a call with reasoning_effort none. Threshold 54 if used.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 256000,
+            "reasoning_effort": "none"
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 54
+        }
+      }
+    },
+    {
+      "match": "^meta-llama/Llama-4-Scout",
+      "backends": [
+        "deepinfra"
+      ],
+      "label": "Llama 4 Scout (DeepInfra), not recommended",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): ranked 64-82% of labelled pairs right and scored a flawed image above good ones by up to 26 points. Fast (12 s) and cheap, but not a usable judge.",
+      "settings": {
+        "judge": {
+          "backend": "deepinfra",
+          "contact_sheet": false,
+          "image_max_side": 512,
+          "deepinfra": {
+            "temperature": 0,
+            "top_p": null,
+            "max_tokens": 4096,
+            "context_tokens": 327680,
+            "reasoning_effort": null
+          }
+        },
+        "loop": {
+          "history_keep_rounds": 2,
+          "prompt_token_budget": 8000,
+          "threshold": 75
+        }
+      }
+    },
+    {
       "match": "^deepseek-ai/DeepSeek-V4",
       "backends": [
         "deepinfra"
       ],
       "label": "DeepSeek V4 Flash (DeepInfra)",
-      "notes": "Hosted vision model: nothing to load locally, several calls can run at once, and a judged round costs a fraction of a cent. It reasons before answering, so leave room for the answer (max_tokens 8192). Temperature 0 keeps the same image's score stable between looks, which is what makes the pass threshold mean anything.",
+      "notes": "Hosted vision model: nothing to load locally, several calls can run at once, and a judged round costs a fraction of a cent. It reasons before answering, so leave room for the answer (max_tokens 8192). Temperature 0 keeps the same image's score stable between looks, which is what makes the pass threshold mean anything. Note: DeepSeek-V4.1-Flash refuses adult (NSFW) prompts; DeepSeek-V4-Flash-Vision-Exp doesn't.",
       "settings": {
         "judge": {
           "backend": "deepinfra",

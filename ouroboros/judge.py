@@ -282,7 +282,12 @@ class Judge:
     @staticmethod
     def score(crit_scores: dict, rubric: dict[str, dict]) -> float:
         total_w = sum(r["weight"] for r in rubric.values())
-        s = sum(max(0, min(10, crit_scores.get(n, 0))) * r["weight"] for n, r in rubric.items())
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+        s = sum(max(0, min(10, num(crit_scores.get(n, 0)))) * r["weight"] for n, r in rubric.items())
         return round(10 * s / total_w, 1)
 
     def review(self, reference: Path, job_goal: str, current: str, notes: str,
@@ -368,12 +373,27 @@ class Judge:
         schema = build_schema(list(rubric), self.samplers, self.schedulers, len(candidates), modes,
                               loras["stems"] if loras else None, loras["max"] if loras else 3,
                               loras.get("switch", True) if loras else False)
-        data, cost, tokens = (backend or self.backend).complete(INSTRUCTIONS, parts, schema, "round_review", side)
+        # A model that can't take the schema answers in plain JSON mode, where nothing
+        # enforces the shape (ByteDance Seed once sent candidates as strings): drop
+        # malformed entries, and ask once more if no candidate was scored at all.
+        cost = 0.0
+        for attempt in range(2):
+            data, c, tokens = (backend or self.backend).complete(INSTRUCTIONS, parts, schema, "round_review", side)
+            cost += c or 0.0
+            data = data if isinstance(data, dict) else {}
+            data["candidates"] = [c for c in data.get("candidates") or []
+                                  if isinstance(c, dict) and isinstance(c.get("index"), int)
+                                  and 0 <= c["index"] < len(candidates) and isinstance(c.get("scores"), dict)]
+            if not isinstance(data.get("edit"), dict):
+                data["edit"] = {}
+            if data["candidates"]:
+                break
+        if not data["candidates"]:
+            raise RuntimeError("the judge's answer scored no candidate (twice); try another model")
 
         scores = [0.0] * len(candidates)
-        for c in data.get("candidates", []):
-            if 0 <= c.get("index", -1) < len(candidates):
-                scores[c["index"]] = self.score(c.get("scores", {}), rubric)
+        for c in data["candidates"]:
+            scores[c["index"]] = self.score(c["scores"], rubric)
         best = max(range(len(scores)), key=scores.__getitem__)  # trust the numbers, not best_index
         return Review(scores, best, data.get("diagnosis", ""), data.get("edit", {}), data, cost, tokens)
 

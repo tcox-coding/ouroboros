@@ -8,7 +8,7 @@ import ouroboros.workflow as wf
 from ouroboros.loras import with_triggers
 from ouroboros.params import GenParams, norm_tag, split_tags
 
-from conftest import FakeLibrary
+from fakes import FakeLibrary
 
 ROOT = Path(__file__).resolve().parent.parent
 

@@ -5,7 +5,7 @@ import time
 import pytest
 
 import ouroboros.generate as gen
-from conftest import FakeComfy
+from fakes import FakeComfy
 from ouroboros.comfy import Cancelled
 
 
@@ -215,7 +215,7 @@ class SettingsBackend:
 def ai_settings(monkeypatch):
     import ouroboros.backends as backends
     import ouroboros.runner as runner
-    from conftest import FakeLibrary
+    from fakes import FakeLibrary
     monkeypatch.setattr(FakeComfy, "choices", lambda self, node, name: (
         ["euler", "dpmpp_2m"] if name == "sampler_name" else ["normal", "karras"]), raising=False)
     monkeypatch.setattr(runner, "lora_library", lambda cfg: FakeLibrary({}))
@@ -274,3 +274,17 @@ def test_home_ai_pose_pick_uses_the_pose_and_records_it(home_run, monkeypatch, t
     assert "hands_on_hips" in job["pose_notes"] and "832x1216" in job["params"]  # auto size follows the pose
     rec = json.loads(next((tmp_path / "runs" / "manual").glob("*/run.json")).read_text())
     assert rec["request"]["pose_library"] == "hands_on_hips" and rec["request"]["pose_control"] is True
+
+
+def test_autofix_and_upscale_only_take_image_names_inside_the_run(tmp_path, monkeypatch):
+    run = tmp_path / "runs" / "manual" / "r1"
+    run.mkdir(parents=True)
+    (run / "image_01.png").write_bytes(b"x")
+    (tmp_path / "secret.png").write_bytes(b"x")
+    assert gen._image_names(run, ["image_01.png", "../../../secret.png", "/etc/passwd", ".hidden.png",
+                                  "missing.png", None, "run.json"]) == ["image_01.png"]
+    monkeypatch.setitem(gen._CTX, "fix_target", lambda r: {"dir": run})
+    with pytest.raises(FileNotFoundError):
+        gen.start_upscale("manual/r1", ["../../../secret.png"])
+    with pytest.raises(FileNotFoundError):
+        gen.start_autofix("manual/r1", ["../../../secret.png"])

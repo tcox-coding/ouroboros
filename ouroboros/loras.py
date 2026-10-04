@@ -386,11 +386,50 @@ def made_up_token(word: str) -> bool:
     return bool(re.search(r"[A-Za-z][0-9]|_|[a-z][A-Z]", word))
 
 
+_NAME_NOISE = {"style", "pony", "ponyxl", "xl", "sdxl", "lora", "illustrious", "the", "and", "for", "concept",
+               "v1", "v2", "v3", "noob", "flux"}
+
+
+def _name_words(text: str) -> set[str]:
+    """Lower-case words of a LoRA name, title or tag, camelCase split ("FlatColor" -> flat, color)."""
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text or "")
+    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 2} - _NAME_NOISE
+
+
+def lora_trigger(rec: dict, name: str) -> str | None:
+    """The trigger word that is the LoRA's own, or None. A LoRA's listed "trigger words"
+    often come from its training captions, so the first one can be an ordinary tag
+    ("long_hair" on a cartoon style LoRA, "female" on an artist style): added to every
+    render, it overrode the subject (short-haired characters came out long-haired). A
+    trigger counts when it is a made-up token (digits or mixed case: "p0seA", "PuffyNips";
+    words run together: "legsbehindhead"; an acronym: "WHF"), or names the LoRA: it shares
+    a word, or a word's start, with its file name or title ("flat color" for
+    FlatColor.safetensors, "melkor_style" for "Melkor style", "helixart" for "helix").
+    The first three listed are considered."""
+    title_words = _name_words(lora_stem(name)) | _name_words(rec.get("title", ""))
+    for w in (rec.get("trigger_words") or [])[:3]:
+        if re.match(r"\W*(score_\d|source_|rating_)", w, re.I):
+            continue
+        bare = w.strip(" ,()")
+        # A letter then a digit ("p0seA", "RSV1.2"), not a leading count ("1girl", "2boys").
+        distinctive = (bool(re.search(r"[A-Za-z][0-9]|[a-z][A-Z]", bare))
+                       or ("_" in bare and not re.fullmatch(r"[a-z]+(_[a-z]+)+", bare))
+                       or bool(re.fullmatch(r"[a-z]{11,}", bare.lower()))  # run together: "legsbehindhead"
+                       or bool(re.fullmatch(r"[A-Z]{2,5}", bare)))     # an acronym: "WHF"
+        words = _name_words(w)
+        names_it = bool(words & title_words) or any(
+            a.startswith(b) or b.startswith(a) for a in words for b in title_words if min(len(a), len(b)) >= 4)
+        if distinctive or names_it:
+            return w
+    return None
+
+
 def with_triggers(positive: str, active: tuple, library: LoraLibrary | None, split_tags, norm_tag,
                   protected: set[str] | None = None) -> str:
     """The positive prompt as rendered:
-    - the main trigger word (the first listed) of each active managed LoRA is added
-      (only the main one: some LoRAs list many, e.g. every character they know);
+    - the trigger word of each active managed LoRA (lora_trigger: its own, not a caption
+      tag it happens to list first) is added (only that one: some LoRAs list many, e.g.
+      every character they know);
     - trigger words of managed LoRAs that are off are removed, since they mean nothing
       without their LoRA, unless they're in `protected` (the user's own prompt) or
       shared with an active LoRA. Only LoRA-specific tokens count: a trigger word no
@@ -404,7 +443,7 @@ def with_triggers(positive: str, active: tuple, library: LoraLibrary | None, spl
         return positive
     index = library.index()
     active_names = [n for n, _ in active]
-    want = [index[n]["trigger_words"][0] for n in active_names if index.get(n, {}).get("trigger_words")]
+    want = [t for n in active_names if (t := lora_trigger(index.get(n) or {}, n))]
     keep = {norm_tag(w) for w in want} | {norm_tag(w) for n in active_names
                                           for w in index.get(n, {}).get("trigger_words", [])}
     listed = Counter(norm_tag(w) for rec in index.values() for w in rec.get("trigger_words", []))

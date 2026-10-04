@@ -319,8 +319,7 @@
       <div>
         <div class="panel target-panel" id="tp-style">
           <h2>Style <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
-          <textarea id="style-text" rows="2" placeholder="the art style in words, e.g. 90s anime cel shading, thick ink outlines, soft painterly light"></textarea>
-          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="style-use" data-role="style"> Use a saved style, an image, or let the AI pick</label>
+          <label class="check" style="margin:0"><input type="checkbox" class="target-toggle" id="style-use" data-role="style"> Use a saved style, an image, or let the AI pick</label>
           <div class="target-extra hide" id="style-extra">
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
               <button type="button" class="btn pose-pick" data-ref-for="style" title="Choose a saved style, or let the AI pick one"></button>
@@ -341,8 +340,7 @@
         </div>
         <div class="panel target-panel" id="tp-subject">
           <h2>Subject <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
-          <textarea id="subject-text" rows="2" placeholder="the character in words, e.g. red-haired knight in silver armour, green eyes, scar on the cheek"></textarea>
-          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="subject-use" data-role="subject"> Use a saved character, an image, or let the AI pick</label>
+          <label class="check" style="margin:0"><input type="checkbox" class="target-toggle" id="subject-use" data-role="subject"> Use a saved character, an image, or let the AI pick</label>
           <div class="target-extra hide" id="subject-extra">
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
               <button type="button" class="btn pose-pick" data-ref-for="subject" title="Choose a saved character, or let the AI pick one"></button>
@@ -369,8 +367,7 @@
         </div>
         <div class="panel target-panel" id="tp-pose">
           <h2>Pose <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></h2>
-          <textarea id="pose-text" rows="2" placeholder="the pose in words, e.g. kneeling, hands together, looking up at the viewer"></textarea>
-          <label class="check" style="margin:8px 0 0"><input type="checkbox" class="target-toggle" id="pose-use" data-role="pose"> Use a saved pose, an image, or let the AI pick</label>
+          <label class="check" style="margin:0"><input type="checkbox" class="target-toggle" id="pose-use" data-role="pose"> Use a saved pose, an image, or let the AI pick</label>
           <div class="target-extra hide" id="pose-extra">
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
               <button type="button" class="btn pose-pick" data-pose-for="pose-library" title="Choose a saved pose, or let the AI pick one"></button>
@@ -393,7 +390,7 @@
         <div class="panel">
           <h2>Prompt</h2>
           <label class="field-label" for="home-desc">Describe it &mdash; the LLM writes both prompts</label>
-          <textarea id="home-desc" rows="3" placeholder="a stern woman with a black bob in a red work shirt&#10;(or leave empty and use just the reference image)"></textarea>
+          <textarea id="home-desc" rows="3" placeholder="the character, art style and pose, e.g. a stern woman with a black bob in a red work shirt, 90s anime cel shading, arms crossed&#10;(or leave empty and write the prompt from the style, subject and pose images)"></textarea>
           <div class="row" style="gap:8px;margin-top:8px;align-items:center">
             <button class="btn" id="write-prompts">Write prompts</button>
             <label class="check" style="margin:0" title="Before writing, the LLM picks LoRAs from everything installed (keeping any you've selected), and the prompts are then written for all of them">
@@ -477,8 +474,8 @@
                 <select id="a-hands"><option value="">settings</option><option value="true">yes</option><option value="false">no</option></select></label>
               <label title="Look for flaws (hands, anatomy, proportions) in the final image and repair them">Auto-fix the result
                 <select id="a-autofix"><option value="">settings</option><option value="true">yes</option><option value="false">no</option></select></label>
-              <label>LoRA choice
-                <select id="a-lora-mode"><option value="">settings</option><option value="auto">AI picks</option><option value="workflow">workflow's own</option><option value="off">none</option></select></label>
+              <label title="With LoRAs selected above, the run uses exactly those for every round (their strengths may be tuned; none are swapped, added or dropped)">LoRA choice
+                <select id="a-lora-mode"><option value="">settings</option><option value="auto">AI picks</option><option value="workflow">workflow's own</option><option value="off">none</option><option value="fixed" hidden>the LoRAs selected above</option></select></label>
               <label title="The LLM chooses the starting steps, CFG, sampler and scheduler before round 1 (the judge tunes them afterwards either way)">Starting sampler settings
                 <select id="a-ai-settings"><option value="">settings (AI if ticked above)</option><option value="true">AI chooses</option><option value="false">as set above</option></select></label>
               <label title="A larger, more detailed copy of the final image (best_upscaled.png); the judged image stays as it is">Upscale the result
@@ -642,7 +639,7 @@
             <label>Max answer tokens <input name="deepinfra.max_tokens" type="number" min="256" step="256"></label>
             <label>Context (tokens) <input name="deepinfra.context_tokens" type="number" min="4096" step="1024"></label>
             <label>Reasoning effort
-              <select name="deepinfra.reasoning_effort"><option value="">model default</option><option>low</option><option>medium</option><option>high</option></select>
+              <select name="deepinfra.reasoning_effort"><option value="">model default</option><option value="none">none (no thinking)</option><option>low</option><option>medium</option><option>high</option></select>
             </label>
           </div>
           <p class="muted" id="deepinfra-key"></p>
@@ -860,28 +857,26 @@ function showTab(name) {
 $$("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---- home: manual generation ----------------------------------------------------
-// Three targets (style, subject, pose): each is words, and/or (with its box ticked) an image
-// or, for the pose, a saved pose. An image or saved choice counts only while its box is ticked.
+// Three targets (style, subject, pose): with its box ticked, an image, a saved one or the AI's
+// pick. Words about any of them go in the description.
 const ROLES = ["style", "subject", "pose"];
 const refs = {style: null, subject: null, pose: null};      // {name, b64} per target
 let loraCatalog = null, loraPicks = [];
 const targetOn = role => $(`#${role}-use`).checked;
 const refUsed = role => targetOn(role) ? refs[role] : null;
-const targetText = role => $(`#${role}-text`).value.trim();
 const hasImage = role => !!(refUsed(role) || libChoice(role));  // an upload, or a saved one (or the AI's pick)
 const ipOn = () => !!(hasImage("subject") && $("#subject-ip").checked) || !!(hasImage("style") && $("#style-ip").checked);
 // A saved style / character ("" none, "auto" the AI picks, or its name), while the box is ticked.
 const libChoice = role => role !== "pose" && targetOn(role) ? $(`#${role}-library`).value : "";
-const anyTarget = () => ROLES.some(r => refUsed(r) || targetText(r) || libChoice(r)) || (targetOn("pose") && !!$("#pose-library").value);
+const anyTarget = () => ROLES.some(r => refUsed(r) || libChoice(r)) || (targetOn("pose") && !!$("#pose-library").value);
 function setTargetOn(role, on) {
   $(`#${role}-use`).checked = on;
   $(`#${role}-extra`).classList.toggle("hide", !on);
 }
 $$(".target-toggle").forEach(cb => cb.onchange = () => { setTargetOn(cb.dataset.role, cb.checked); syncPromptLock(); updateEstimate(); });
-ROLES.forEach(r => $(`#${r}-text`).addEventListener("input", syncPromptLock));
-// {role: {image_b64, image_name, text}} for the requests that take targets.
+// {role: {image_b64, image_name, library}} for the requests that take targets.
 function targetsForRequest() {
-  return Object.fromEntries(ROLES.map(r => [r, {text: targetText(r), image_b64: refUsed(r)?.b64 || null,
+  return Object.fromEntries(ROLES.map(r => [r, {image_b64: refUsed(r)?.b64 || null,
                                                 image_name: refUsed(r)?.name || null, library: libChoice(r) || null}]));
 }
 $$(".ref-slot input[type=file]").forEach(inp => inp.onchange = () => {
@@ -1199,6 +1194,11 @@ $("#lora-open").onclick = openLoraDialog;
 $("#lora-dialog-done").onclick = closeLoraDialog;
 $("#lora-dialog").addEventListener("mousedown", e => { if (e.target.id === "lora-dialog") closeLoraDialog(); });
 function renderPicks() {
+  // Selected LoRAs are what an automatic run uses, throughout: the mode follows them.
+  const mode = $("#a-lora-mode");
+  if (loraPicks.length) { if (mode.value !== "fixed") mode.dataset.was = mode.value; mode.value = "fixed"; }
+  else if (mode.value === "fixed") mode.value = mode.dataset.was || "";
+  mode.disabled = !!loraPicks.length;
   $("#lora-selected").innerHTML = loraPicks.length ? loraPicks.map((l, i) => `
     <div class="lora-pick">
       <img src="/api/loras/thumb?id=${encodeURIComponent(l.id)}" alt="">
@@ -1212,7 +1212,8 @@ function renderPicks() {
         <div class="muted" style="font-size:11px;text-align:center" data-shown="${i}">${l.strength}</div>
       </div>
       <button class="btn small danger" data-drop="${i}">✕</button>
-    </div>`).join("") : `<div class="muted" style="font-size:12px">None. The workflow's own LoRAs are used.</div>`;
+    </div>`).join("") + `<div class="muted" style="font-size:12px">Written for by "Write prompts"; an automatic run uses only these, in every round (it may tune their strengths).</div>`
+    : `<div class="muted" style="font-size:12px">None. The workflow's own LoRAs are used.</div>`;
 }
 $("#lora-selected").addEventListener("input", e => {
   const i = e.target.dataset.strength;
@@ -1296,7 +1297,6 @@ function genRequest() {
     positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
     style_b64: refUsed("style")?.b64 || null, subject_b64: refUsed("subject")?.b64 || null,
     pose_b64: refUsed("pose")?.b64 || null,
-    style_text: targetText("style"), subject_text: targetText("subject"), pose_text: targetText("pose"),
     style_library: libChoice("style") || null, subject_library: libChoice("subject") || null,
     style_ip: hasImage("style") && $("#style-ip").checked, style_ip_weight: Number($("#style-ip-weight").value),
     subject_ip: hasImage("subject") && $("#subject-ip").checked, subject_ip_weight: Number($("#subject-ip-weight").value),
@@ -1332,8 +1332,7 @@ function estimateFor(req) {
   const mp = Array.isArray(req.size) ? req.size[0] * req.size[1] / 1e6 : 1.03;  // auto: an SDXL bucket
   const extra = 1 + nIp * e.ipadapter + (req.pose_control ? e.control : 0);
   if (!["running", "external"].includes(e.comfyui)) parts.push(["starting ComfyUI", 60]);
-  if (!req.positive && (req.description || req.style_b64 || req.subject_b64 || req.pose_b64 || req.style_library || req.subject_library
-                         || req.style_text || req.subject_text || req.pose_text)) parts.push(["writing the prompt", e.llm]);
+  if (!req.positive && (req.description || req.style_b64 || req.subject_b64 || req.pose_b64 || req.style_library || req.subject_library)) parts.push(["writing the prompt", e.llm]);
   if (req.pose_library === "auto") parts.push(["choosing a pose", e.llm * 0.5]);
   for (const k of ["style", "subject"]) if (req[`${k}_library`] === "auto") parts.push([`choosing a ${k === "style" ? "style" : "character"}`, e.llm * 0.5]);
   if (req.pose_control) parts.push(["reading the pose", 3]);
@@ -1402,9 +1401,9 @@ async function rerunOnHome(r) {
   if (![...$("#g-size").options].some(o => o.value === size)) $("#g-size").add(new Option(size, size));
   $("#g-size").value = size;
   $("#g-mode").value = q.mode || ""; fillCheckpoints($("#g-checkpoint"), q.checkpoint || "");
-  // Targets: words, images and the IP-Adapter / pose settings (a request from before the
-  // separate targets had one reference image: it goes back as the subject).
-  for (const r of ROLES) $(`#${r}-text`).value = q[`${r}_text`] || "";
+  // Targets: images and the IP-Adapter / pose settings (a request from before the separate
+  // targets had one reference image: it goes back as the subject). Any words a run had for a
+  // target are already in its prompt, which comes back above.
   $("#subject-ip").checked = q.subject_ip ?? !!q.ipadapter; $("#style-ip").checked = !!q.style_ip;
   setv("subject-ip-weight", q.subject_ip_weight ?? q.ip_weight); setv("style-ip-weight", q.style_ip_weight);
   setv("ip-preset", q.ip_preset);
@@ -1520,11 +1519,12 @@ $("#do-auto").onclick = async () => {
                        size: $("#g-size").value === "auto" ? "auto" : $("#g-size").value,
                        pose: !targetOn("pose") ? null : $("#pose-library").value
                              || ($("#use-pose").checked && !refUsed("pose") ? "reference" : null),
-                       pose_control: targetOn("pose") && !$("#use-pose").checked ? false : null}),
+                       pose_control: targetOn("pose") && !$("#use-pose").checked ? false : null,
+                       loras: req.loras.length ? req.loras : null}),
       overrides: clean({threshold: num("#a-threshold"), max_rounds: num("#a-max-rounds"),
                         plateau_rounds: num("#a-plateau"), candidates_per_round: num("#a-candidates"),
                         penalize_extras: pick("#a-extras"), hand_refine: pick("#a-hands"), auto_fix: pick("#a-autofix"),
-                        lora_mode: pick("#a-lora-mode"),
+                        lora_mode: req.loras.length ? "fixed" : pick("#a-lora-mode"),
                         ai_settings: pick("#a-ai-settings") ?? ($("#g-ai-settings").checked || null),
                         upscale: pick("#a-upscale") ?? ($("#g-upscale").checked || null)}),
     });
@@ -1635,8 +1635,10 @@ function renderSetup(s, runName) {
   return `<div class="panel"><h2>Checkpoint and LoRAs</h2>
     <table class="kv-table">
       <tr><th>Checkpoint</th><td>${esc(s.checkpoint)} (${esc(s.checkpoint_base)})</td></tr>
+      ${s.judge_model || s.judge_backend ? `<tr><th>Judge</th><td>${esc(s.judge_model || "?")}${
+        s.judge_backend ? ` (${esc(BACKEND_NAMES[s.judge_backend] || s.judge_backend)})` : ""}</td></tr>` : ""}
       <tr><th>Output size</th><td>${s.size ? esc(s.size.join(" × ") + " (" + (s.size_setting || "auto") + ")") : "–"}</td></tr>
-      <tr><th>LoRA choice</th><td>${esc(s.lora_mode)}</td></tr>
+      <tr><th>LoRA choice</th><td>${esc(s.lora_mode === "fixed" ? "only the selected LoRAs" : s.lora_mode)}</td></tr>
       <tr><th>Started with</th><td>${esc(loras)}</td></tr>
       ${s.pose && s.pose.setting && s.pose.setting !== "off" ? `<tr><th>Pose</th><td>${esc(s.pose.setting === "reference" ? "from the reference" : s.pose.setting)}${
         s.pose.active ? ` · strength ${s.pose.strength ?? "–"}` : " (not used: no person found or rtmlib missing)"}${s.pose.description ? ` · ${esc(s.pose.description)}` : ""}</td></tr>` : ""}
@@ -1997,11 +1999,18 @@ function reuseManualRun(r) {
 
 // ---- service status pills ----
 let status = {};
+const BACKEND_NAMES = {deepinfra: "DeepInfra", openai: "OpenAI", ollama: "Ollama"};
+const shortModel = m => String(m || "").split("/").pop();
 async function loadStatus() {
   try { status = await api("/api/status"); } catch { status = {}; }
-  const pill = (label, v) => `<span class="pill ${v === "ok" ? "ok" : "bad"}" title="${esc(v)}">${label}${v === "ok" ? "" : ": " + esc(v)}</span>`;
+  const pill = (label, v, title) => `<span class="pill ${v === "ok" ? "ok" : "bad"}" title="${esc(title || v)}">${esc(label)}${v === "ok" ? "" : ": " + esc(v)}</span>`;
+  // The judge pill names the model (its last path part: Qwen/Qwen2.5-VL-72B-Instruct -> Qwen2.5-VL-72B-Instruct);
+  // hovering shows the backend, the full name and the second-opinion model.
+  const judgeTitle = [`${BACKEND_NAMES[status.backend] || status.backend || "?"}: ${status.model || "no model set"}`,
+                      status.confirm_model ? `second opinion: ${status.confirm_model}` : "",
+                      status.judge && status.judge !== "ok" ? status.judge : ""].filter(Boolean).join("\n");
   const comfyState = status.comfyui?.state;
-  $("#pills").innerHTML = (comfyState === "starting" ? `<span class="pill" title="${esc(status.comfyui.message)}">ComfyUI: starting…</span>` : pill("ComfyUI", status.comfy)) + pill("Judge · " + (status.backend || "?"), status.judge) + pill("Workflows", status.workflows);
+  $("#pills").innerHTML = (comfyState === "starting" ? `<span class="pill" title="${esc(status.comfyui.message)}">ComfyUI: starting…</span>` : pill("ComfyUI", status.comfy)) + pill("Judge · " + (shortModel(status.model) || BACKEND_NAMES[status.backend] || status.backend || "?"), status.judge, judgeTitle) + pill("Workflows", status.workflows);
   if (status.upscale_models) $$(".upscale-model-select").forEach(sel => {
     const cur = sel.value || sel.dataset.want || "";
     if (sel.options.length === 1 + status.upscale_models.length) return;
@@ -2011,7 +2020,7 @@ async function loadStatus() {
   });
   // Lists that come from ComfyUI were empty if it wasn't up yet (e.g. still auto-starting) when
   // the page loaded: fill them in once it is.
-  if (status.comfy === "ok" && !checkpointList?.items.length) loadCheckpoints();
+  if (status.comfy === "ok" && !checkpointList?.items?.length) loadCheckpoints();
   if (status.samplers && !$("#g-sampler").options.length) {
     const fill = (sel, list, pick) => $(sel).innerHTML = list.map(o => `<option ${o === pick ? "selected" : ""}>${esc(o)}</option>`).join("");
     fill("#g-sampler", status.samplers, "dpmpp_2m"); fill("#g-scheduler", status.schedulers || [], "karras");
@@ -2591,7 +2600,7 @@ function fillCheckpoints(sel, value) {
   const first = sel.options[0].outerHTML, items = checkpointList?.items || [];
   sel.innerHTML = first + items.map(c =>
     `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(c.base)}${c.name === checkpointList.default ? " (workflow)" : ""}${c.usable ? "" : " (not SDXL)"}</option>`).join("")
-    + (value && !items.some(c => c.name === value) ? `<option value="${esc(value)}">${esc(value)}${checkpointList?.items.length ? " (not found)" : ""}</option>` : "");
+    + (value && !items.some(c => c.name === value) ? `<option value="${esc(value)}">${esc(value)}${checkpointList?.items?.length ? " (not found)" : ""}</option>` : "");
   sel.value = value || "";
 }
 

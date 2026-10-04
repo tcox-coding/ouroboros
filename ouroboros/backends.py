@@ -162,6 +162,7 @@ class OpenAIBackend:
         return (fresh * p["input"] + cached * p["cached_input"] + usage.output_tokens * p["output"]) / 1e6
 
 
+_IMAGE_LIMITS: dict[str, int] = {}  # model -> images per request, from its "Too many images" error
 MAX_OUTPUT_TOKENS = 32768  # ceiling when a truncated answer is retried with more room
 
 
@@ -210,14 +211,26 @@ class DeepInfraBackend:
     def context_window(self) -> int:
         return int(self.cfg.get("context_tokens") or 163840)
 
-    def complete(self, instructions: str, parts: list[dict], schema: dict, name: str, max_side: int):
-        content = []
+    def _content(self, parts: list[dict], max_side: int) -> list[dict]:
+        """The user message. Past the model's image limit (learnt from its error, see
+        complete), later images become a note; the reference always comes first."""
+        content, n = [], 0
+        limit = _IMAGE_LIMITS.get(self.cfg["model"])
         for part in parts:
             if "image" in part:
+                n += 1
+                if limit is not None and n > limit:
+                    content.append({"type": "text", "text": "(image left out: this model takes at most "
+                                                            f"{limit} images a request)"})
+                    continue
                 url = "data:image/jpeg;base64," + encode_jpeg(part["image"], part.get("max_side", max_side))
                 content.append({"type": "image_url", "image_url": {"url": url}})
             else:
                 content.append({"type": "text", "text": part["text"]})
+        return content
+
+    def complete(self, instructions: str, parts: list[dict], schema: dict, name: str, max_side: int):
+        content = self._content(parts, max_side)
         body = {
             "model": self.cfg["model"],
             # The schema is also spelled out in the system message: it is what keeps the
@@ -240,6 +253,7 @@ class DeepInfraBackend:
 
         attempts = 1 + int(self.cfg.get("retries", 2))
         problem = ""
+        schema_500s = 0
         attempt = -1
         while (attempt := attempt + 1) < attempts:
             t0 = time.monotonic()
@@ -252,11 +266,34 @@ class DeepInfraBackend:
                 if attempt + 1 < attempts:
                     time.sleep(5)
                 continue
-            if r.status_code == 400 and "json_schema" in r.text and body["response_format"]["type"] != "json_object":
+            if r.status_code in (400, 405, 500) and "response_format" in body and (
+                    "json_schema" in r.text or "response_format" in r.text):
                 # Not every hosted model takes a schema; plain JSON mode plus the schema
-                # in the system message is the fallback.
-                body["response_format"] = {"type": "json_object"}
+                # in the system message is the fallback, and no format at all after that
+                # (gemma-4-31B-it-Ultra answers 405, ByteDance Seed 500 InvalidParameter,
+                # and Seed-2.0-code takes neither).
+                if body["response_format"]["type"] == "json_schema":
+                    body["response_format"] = {"type": "json_object"}
+                else:
+                    del body["response_format"]
+                attempts += 1
                 continue
+            if r.status_code == 400 and (m := re.search(r"Too many images in request: \d+ > (\d+)", r.text)):
+                # MiMo-V2.6-Flash takes at most 4 images, and LoRA picking sends 6.
+                _IMAGE_LIMITS[self.cfg["model"]] = int(m.group(1))
+                body["messages"][1]["content"] = self._content(parts, max_side)
+                attempts += 1
+                continue
+            if r.status_code == 500 and (body.get("response_format") or {}).get("type") == "json_schema":
+                # ByteDance Seed-2.0 answers a schema with a bare "InternalServiceError"
+                # every time: retry once as is (it may be a passing fault), then step down.
+                schema_500s += 1
+                if schema_500s >= 2:
+                    body["response_format"] = {"type": "json_object"}
+                    attempts += 1
+                    continue
+                if attempt + 1 >= attempts:
+                    attempts += 1
             if r.status_code in (408, 429, 500, 502, 503, 504):
                 problem = f"HTTP {r.status_code}: {r.text[:300]}"
                 if attempt + 1 < attempts:

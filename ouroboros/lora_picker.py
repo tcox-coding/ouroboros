@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .judge import contact_sheet
-from .loras import LoraLibrary, compatible
+from .loras import LoraLibrary, compatible, lora_trigger
 from .params import LORA_STRENGTH, lora_stem
 
 INSTRUCTIONS = """You choose style LoRAs for a Stable Diffusion XL (Pony-family) model so that new
@@ -170,11 +170,17 @@ def prompt_notes(library: LoraLibrary, loras: tuple) -> str:
             continue
         kind = f" ({rec['type']})" if rec.get("type") else ""
         what = f" - {rec['description'][:160]}" if rec.get("description") else ""
+        trigger = lora_trigger(rec, name)
+        # Only its own trigger: the rest of a LoRA's listed "trigger words" are usually
+        # caption tags ("long_hair", "female") that would override the subject.
         line = (f"- {rec.get('title', lora_stem(name))[:60]}{kind} at strength {w:g}{what}; "
-                f"trigger words: {', '.join(rec['trigger_words'][:6]) or 'none'}")
-        ex = next((e["prompt"] for e in rec["examples"] if e.get("prompt")), "")
+                + (f"trigger word: {trigger}" if trigger else
+                   "no trigger word of its own" + (f" (tags it was trained with, to use only where they fit: "
+                                                   f"{', '.join(rec['trigger_words'][:4])})"
+                                                   if rec.get("trigger_words") else "")))
+        ex = next((e.get("prompt") for e in rec.get("examples") or [] if e.get("prompt")), "")
         if ex:
-            line += f"; an example prompt made with it: {ex[:260]}"
+            line += f"; an example prompt made with it (for its wording only, not its subject or look): {ex[:200]}"
         lines.append(line)
     return "\n".join(lines)
 
