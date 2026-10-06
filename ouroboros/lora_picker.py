@@ -26,6 +26,10 @@ references; style is 0-10).
 - Prefer LoRAs whose local results are good, but trust what you see over a few tests.
 - Also list a few alternatives worth testing against your picks.
 - Judge by style only; the subject of an example image doesn't matter.
+- You may also get a SUBJECT image (the character the new images show) and a POSE image
+  (the pose wanted). They are not the style to match: pick a character or outfit LoRA only
+  if it is clearly that same character or outfit, a pose LoRA only if it gives that pose,
+  and never let their drawing style override the REFERENCE's.
 
 Reply with JSON only."""
 
@@ -34,18 +38,28 @@ SHORTLIST_INSTRUCTIONS = """You shortlist style LoRAs for a Stable Diffusion XL 
 REFERENCE image and each LoRA's description, tags, trigger words, the prompt of one of
 its example images and its local test results, choose the LoRAs most likely to
 reproduce the reference's art style (line work, shading, colour palette, proportions).
-Only their example images will be compared next. Reply with JSON only."""
+A SUBJECT or POSE image, when given, shows who and what pose the new images will have, not
+the style: a character or pose LoRA belongs on the list only if it clearly is that character
+or gives that pose. Only their example images will be compared next. Reply with JSON only."""
 
 
-def pick_loras(backend, library: LoraLibrary, reference: Path, goal: str, ckpt_base: str,
-               max_loras: int, cfg: dict) -> dict:
+def pick_loras(backend, library: LoraLibrary, reference: Path | None, goal: str, ckpt_base: str,
+               max_loras: int, cfg: dict, style_text: str = "", context: list[tuple] | None = None) -> dict:
     """Returns {"picks": [(name, strength, why)], "alternatives": [(name, strength)],
     "notes": str, "considered": [names], "shortlist": [names]}.
 
     Two calls, to stay inside the judge's prompt budget: a vision model's image costs
     about as much as ~1,100 tokens of text in Ollama's qwen3-vl however small it is,
     so 15 example images (~19K tokens) don't fit. First a text shortlist (reference +
-    LoRA cards), then the visual comparison with only the shortlisted examples."""
+    LoRA cards), then the visual comparison with only the shortlisted examples.
+
+    reference None: the style to match is only in words (style_text), e.g. a job whose
+    description asks for "Incase style, flat colours" for a character drawn another way;
+    the character image would then pull the picks toward the wrong style.
+
+    context: the job's other images, each (role, image, tags) with role "subject" or "pose",
+    shown labelled as what the images depict, not the style. With contact_sheet (one image
+    per message) they are tiles of the grid, and the shortlist gets only their tags."""
     index = library.index()
     cands = [r for r in index.values() if compatible(r.get("base_model"), ckpt_base) is not False]
     cands.sort(key=lambda r: (compatible(r.get("base_model"), ckpt_base) is not True, not r.get("examples")))
@@ -61,6 +75,21 @@ def pick_loras(backend, library: LoraLibrary, reference: Path, goal: str, ckpt_b
         return {"picks": [], "alternatives": [], "notes": "no compatible LoRAs indexed", "considered": []}
     considered = [r["name"] for r in cands]
     side = cfg.get("image_max_side", 384)
+    # What the LoRAs are matched against: the reference image, or the style described in words.
+    style_ref = ([{"text": "REFERENCE IMAGE (the style to match):"}, {"image": reference}] if reference is not None
+                 else [{"text": "THE STYLE TO MATCH (described, no image; the REFERENCE below means this "
+                                f"style): {style_text.strip()[:400]}"}])
+    sheet = bool(cfg.get("contact_sheet"))
+
+    def ctx_parts(with_images: bool) -> list[dict]:
+        out = []
+        for role, image, tags in context or []:
+            label = REFERENCE_LABELS.get(role, role.upper() + " IMAGE:")
+            tags = f"\n(its tags: {tags.strip()[:300]})" if (tags or "").strip() else ""
+            out.append({"text": (label if with_images else label.replace(" IMAGE", "", 1).rstrip(":") + " (in words only):") + tags})
+            if with_images:
+                out.append({"image": image, "max_side": side})
+        return out
     visual_n = int(cfg.get("pick_visual_candidates", 5))
     shortlist_note = ""
     if len(cands) > visual_n:
@@ -73,7 +102,7 @@ def pick_loras(backend, library: LoraLibrary, reference: Path, goal: str, ckpt_b
             ex = next((e["prompt"] for e in r["examples"] if e.get("prompt")), "")
             cards.append("- " + library.card(r) + (f"\n  example prompt: {ex[:180]}" if ex else ""))
         parts = [{"text": f"GOAL (what the images show)\n{goal[:400]}\n\nLORAS\n" + "\n".join(cards)},
-                 {"text": "REFERENCE IMAGE (the style to match):"}, {"image": reference},
+                 *style_ref, *ctx_parts(not sheet),
                  {"text": f"Shortlist the {visual_n} LoRAs most likely to match the REFERENCE's style."}]
         schema = {"type": "object",
                   "properties": {"shortlist": {"type": "array", "minItems": min(visual_n, len(cands)),
@@ -91,14 +120,21 @@ def pick_loras(backend, library: LoraLibrary, reference: Path, goal: str, ckpt_b
     parts: list[dict] = [{"text": f"GOAL (what the images show)\n{goal[:600]}\n\nMax LoRAs to use together: {max_loras}."}]
     thumbs = [(r, next((e["thumb"] for e in r["examples"] if e.get("thumb") and Path(e["thumb"]).exists()), None))
               for r in cands]
-    if cfg.get("contact_sheet"):
-        tiles = [("REFERENCE", reference)] + [(f"LORA {lora_stem(r['name'])}", Path(t)) for r, t in thumbs if t]
+    if sheet:
+        given = ([("REFERENCE", reference)] if reference is not None else []) + \
+            [(role.upper(), image) for role, image, _ in context or []]
+        tiles = given + [(f"LORA {lora_stem(r['name'])}", Path(t)) for r, t in thumbs if t]
         parts += [{"text": "LORAS\n" + "\n".join("- " + library.card(r) for r, _ in thumbs)},
-                  {"text": "The image is a grid: the REFERENCE, then one example per LoRA, each labelled."},
+                  *([] if reference is not None else style_ref),
+                  *[p for p in ctx_parts(False)],
+                  *([] if not tiles else [{"text": "The image is a grid: "
+                           + "".join(f"the {label}, " for label, _ in given) + ("then " if given else "")
+                           + "one example per LoRA, each labelled. "
+                           + "SUBJECT and POSE tiles show what the images depict, not the style."},
                   {"image": contact_sheet_tiles(tiles, cfg.get("contact_sheet_size", 1120)),
-                   "max_side": cfg.get("contact_sheet_size", 1120)}]
+                   "max_side": cfg.get("contact_sheet_size", 1120)}])]
     else:
-        parts += [{"text": "REFERENCE IMAGE (the style to match):"}, {"image": reference}]
+        parts += style_ref + ctx_parts(True)
         for r, t in thumbs:
             ex = next((e for e in r["examples"] if e.get("thumb") == t), None)
             text = f"LORA {library.card(r)}"
@@ -197,12 +233,23 @@ one-line description of what it does.
   pose or concept LoRA forces a specific pose, act or object into the image. Don't pick
   two that fight each other (two styles, two poses).
 - When a reference image is given, match its drawing style and subject, not just the words.
+- Images may come labelled by what they are for. A STYLE image is the drawing style to
+  reach (style LoRAs). A SUBJECT image is the character to depict: their features, outfit
+  and build (a character or clothing LoRA only if it is that character or outfit). A POSE
+  image only shows the pose and framing wanted (pose LoRAs); ignore its character and style.
 - strength: stay inside the range given for that LoRA; use its default unless you have a
   reason, and go lower when stacking several.
 - Say in one short sentence why each pick helps this prompt.
 - Picking nothing is a valid answer when nothing fits.
 
 Reply with JSON only."""
+
+
+REFERENCE_LABELS = {
+    "style": "STYLE IMAGE (the drawing style to reach):",
+    "subject": "SUBJECT IMAGE (the character to depict: features, outfit, build; not its style):",
+    "pose": "POSE IMAGE (only the pose and framing wanted; ignore who is in it and how it is drawn):",
+}
 
 
 def _menu_line(n: int, e: dict) -> str:
@@ -221,7 +268,8 @@ def _menu_line(n: int, e: dict) -> str:
 
 def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str = "",
                   description: str = "", reference=None, max_loras: int = 3,
-                  max_side: int = 512, selected: list[dict] | None = None) -> dict:
+                  max_side: int = 512, selected: list[dict] | None = None,
+                  references: list[tuple] | None = None) -> dict:
     """Ask the model which of the installed LoRAs suit this prompt.
 
     One call with the whole menu: each LoRA is one line (~30 tokens), so ~500 of them
@@ -231,6 +279,9 @@ def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str 
 
     `selected` are LoRAs the person already picked: they stay, count toward max_loras,
     aren't offered again, and the model is told not to add anything that fights them.
+
+    `references` are the target images, each (role, image, tags): role "style", "subject" or
+    "pose", tags the saved item's words ("" for an upload). Each is shown with what it is for.
     """
     selected = selected or []
     kept = {e.get("comfy_name") for e in selected}
@@ -245,10 +296,14 @@ def suggest_loras(backend, cards: list[dict], positive: str = "", negative: str 
               + "\n".join(x for x in (f"prompt: {positive.strip()}" if positive.strip() else "",
                                       f"negative prompt: {negative.strip()}" if negative.strip() else "",
                                       f"description: {description.strip()}" if description.strip() else "")
-                          if x) or "WHAT THEY WANT TO MAKE\n(only the reference image)")
+                          if x) or "WHAT THEY WANT TO MAKE\n(only the images below)")
     parts = [{"text": wanted}]
     if reference is not None:
         parts += [{"text": "REFERENCE IMAGE (match its style and subject):"}, {"image": reference}]
+    for role, image, tags in references or []:
+        label = REFERENCE_LABELS.get(role, role.upper() + " IMAGE:")
+        parts += [{"text": label + (f"\n(its saved tags: {tags.strip()})" if (tags or "").strip() else "")},
+                  {"image": image}]
     if selected:
         parts.append({"text": "ALREADY SELECTED by the person (these stay; add only what they lack, and "
                               "nothing that fights them, e.g. a second style or pose):\n"

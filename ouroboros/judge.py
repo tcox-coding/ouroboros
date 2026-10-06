@@ -33,7 +33,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .backends import make_backend
+from .backends import make_backend, CompletionError
 from .params import MODES, PHASES
 from .sizes import to_rgb
 from .targets import LABELS, Targets, judge_parts, target_images
@@ -131,10 +131,8 @@ class Review:
 def model_options(model: str, backend: str = "ollama") -> dict:
     """Sampling settings for a model from model_presets.json (so a second-opinion model
     gets its own temperature, context and token budget), for the backend in use."""
-    import re
-    presets = json.loads((Path(__file__).parent / "model_presets.json").read_text(encoding="utf-8"))["presets"]
-    p = next((p for p in presets if backend in p.get("backends", [backend])
-              and re.search(p["match"], model, re.I)), None)
+    from .model_profiles import preset
+    p = preset(model, backend)
     return ((p or {}).get("settings") or {}).get("judge", {}).get(backend, {})
 
 
@@ -252,6 +250,7 @@ class Judge:
     def __init__(self, cfg: dict, samplers: list[str], schedulers: list[str]):
         self.cfg = cfg
         self.backend = make_backend(cfg)
+        self.prompt_backend = make_backend(cfg, "prompt") if cfg.get("prompt_model") else self.backend
         # Optional second opinion for the pass check only (judge.confirm_model): a
         # careful, slower model decides when a job may stop, while the fast one ranks
         # candidates every round. In testing, a 30B thinking model ranked every labelled
@@ -259,10 +258,8 @@ class Judge:
         self.confirm_backend = None
         bkey = cfg.get("backend", "ollama")
         name = (cfg.get("confirm_model") or "").strip()
-        if name and name != cfg.get(bkey, {}).get("model"):
-            sub = json.loads(json.dumps(cfg))
-            sub[bkey] = {**sub.get(bkey, {}), **model_options(name, bkey), "model": name}
-            self.confirm_backend = make_backend(sub)
+        if name and (name != cfg.get(bkey, {}).get("model") or cfg.get("confirm_options")):
+            self.confirm_backend = make_backend(cfg, "confirm")
         self.base_rubric: dict[str, dict] = cfg["rubric"]  # name -> {"weight", "anchors"}
         self.optional_rubric: dict[str, dict] = cfg.get("rubric_optional", {})
         self.samplers, self.schedulers = samplers, schedulers
@@ -378,7 +375,10 @@ class Judge:
         # malformed entries, and ask once more if no candidate was scored at all.
         cost = 0.0
         for attempt in range(2):
-            data, c, tokens = (backend or self.backend).complete(INSTRUCTIONS, parts, schema, "round_review", side)
+            try:
+                data, c, tokens = (backend or self.backend).complete(INSTRUCTIONS, parts, schema, "round_review", side)
+            except Exception as e:
+                raise CompletionError(str(e), cost + float(getattr(e, "cost_usd", 0.0))) from e
             cost += c or 0.0
             data = data if isinstance(data, dict) else {}
             data["candidates"] = [c for c in data.get("candidates") or []
@@ -389,7 +389,7 @@ class Judge:
             if data["candidates"]:
                 break
         if not data["candidates"]:
-            raise RuntimeError("the judge's answer scored no candidate (twice); try another model")
+            raise CompletionError("the judge's answer scored no candidate (twice); try another model", cost)
 
         scores = [0.0] * len(candidates)
         for c in data["candidates"]:
@@ -429,9 +429,24 @@ class Judge:
         if workers > 1:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(workers) as pool:
-                reviews = list(pool.map(one, zip(candidates, currents)))
+                from contextvars import copy_context
+                futures = [pool.submit(copy_context().run, one, pair) for pair in zip(candidates, currents)]
+                reviews, failures = [], []
+                for future in futures:
+                    try:
+                        reviews.append(future.result())
+                    except Exception as e:
+                        failures.append(e)
+                if failures:
+                    cost = sum(r.cost_usd for r in reviews) + sum(float(getattr(e, "cost_usd", 0.0)) for e in failures)
+                    raise CompletionError(str(failures[0]), cost) from failures[0]
         else:
-            reviews = [one(x) for x in zip(candidates, currents)]
+            reviews = []
+            for pair in zip(candidates, currents):
+                try:
+                    reviews.append(one(pair))
+                except Exception as e:
+                    raise CompletionError(str(e), sum(r.cost_usd for r in reviews) + float(getattr(e, "cost_usd", 0))) from e
         scores = [r.scores[0] for r in reviews]
         diffs = [len((r.raw.get("candidates") or [{}])[0].get("differences") or []) for r in reviews]
         best = max(range(len(candidates)), key=lambda i: (scores[i], -diffs[i]))

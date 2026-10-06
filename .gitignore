@@ -15,7 +15,7 @@ workflows/*
 !workflows/nodes.example.json
 !workflows/example_workflow.json
 
-# Generated and personal data: renders, jobs, saved poses/styles/characters, caches, logs, judge test set
+# Generated and personal data: renders, jobs, saved poses/styles/characters, designs, caches, logs, judge test set
 runs/*
 !runs/.keep
 jobs/*/*
@@ -24,6 +24,8 @@ poses/*
 !poses/.keep
 styles/
 characters/
+designs/
+favorites.json
 eval/*
 !eval/.keep
 cache/

@@ -53,6 +53,10 @@ class Targets:
     style: Target = field(default_factory=Target)
     subject: Target = field(default_factory=Target)
     pose: Target = field(default_factory=Target)
+    # Set for a job with a description that gives some targets but not all ("this character,
+    # arms crossed, in Incase style"): a missing target is then judged against the GOAL, not
+    # the job's reference image, which would pull the pose and style back to that image's.
+    goal_for_missing: bool = False
 
     def get(self, role: str) -> Target:
         return getattr(self, role)
@@ -64,14 +68,20 @@ class Targets:
     def split(self) -> bool:
         """True when the targets say more than one reference image would: any text, or
         images that aren't all the same file. False means the classic one-reference job."""
-        if any(t.text.strip() for _, t in self.items()):
+        if self.goal_for_missing or any(t.text.strip() for _, t in self.items()):
             return True
         images = {str(t.image.resolve()) for _, t in self.items() if t.image}
         return len(images) > 1
 
     def image_for(self, role: str, fallback: Path | None) -> Path | None:
-        """The image for a role: its own, else the job's main reference."""
+        """The image for a role: its own, else the job's main reference (not with goal_for_missing)."""
+        if self.goal_for_missing:
+            return self.get(role).image
         return self.get(role).image or (fallback if self.get(role).text.strip() == "" else None)
+
+    def missing(self) -> list[str]:
+        """Roles with neither an image nor words."""
+        return [r for r, t in self.items() if t.empty]
 
     def primary(self) -> Path | None:
         """The main image of a job: the subject's, else the style's, else the pose's."""
@@ -142,13 +152,15 @@ def target_images(targets: Targets, fallback: Path | None, pose_skeleton: dict |
         if role == "pose" and pose_skeleton:
             out.append((role, pose_skeleton["image"], pose_skeleton.get("description") or t.text.strip()))
         else:
-            out.append((role, t.image or (fallback if not t.text.strip() else None), t.text.strip()))
+            out.append((role, targets.image_for(role, fallback), t.text.strip()))
     return out
 
 
 def prompt_parts(targets: Targets) -> list[dict]:
-    """For the prompt writer: what each given target says, images included."""
+    """For the prompt writer: what each given target says, images included (an image that
+    stands for two targets, e.g. the character's own look as the style, is sent once)."""
     parts: list[dict] = []
+    shown: dict[str, str] = {}
     for role in ROLES:
         t = targets.get(role)
         if t.empty:
@@ -156,8 +168,51 @@ def prompt_parts(targets: Targets) -> list[dict]:
         what = {"style": "write the drawing-style and rendering tags from this, not its subject",
                 "subject": "describe this character (build, face, hair, every garment and colour), not its style or pose",
                 "pose": "describe this pose and framing, not its character"}[role]
+        # A file (jobs, Home renders) or an image in memory (Home's Write prompts)
+        key = None if t.image is None else str(Path(t.image).resolve()) if isinstance(t.image, (str, Path)) \
+            else f"id{id(t.image)}"
+        same = shown.get(key) if key else None
         parts.append({"text": f"{LABELS[role]} ({what})" + (f": {t.text.strip()}" if t.text.strip() else "")
-                      + (" Image:" if t.image else "")})
-        if t.image:
+                      + (f" Image: the same as the {same} image." if same else " Image:" if t.image else "")})
+        if t.image and not same:
+            shown[key] = LABELS[role]
             parts.append({"image": t.image})
     return parts
+
+
+# Two IP-Adapters on the same character (the saved style often comes from the same artwork)
+# add up: subject 0.6 + style 0.5 PLUS washed a render out to flat cream with blown
+# highlights, while 0.3 + 0.3 of the same pair rendered clean (same seed, 2026-10-04).
+DEFAULT_MAX_COMBINED = 0.6
+
+
+def max_combined(ip_cfg: dict) -> float:
+    return float(ip_cfg.get("max_combined_weight", DEFAULT_MAX_COMBINED))
+
+
+def cap_ip_weights(adapters: list[dict], cap: float) -> str | None:
+    """Scale the weights of two or more IP-Adapters down in proportion (in place) so they
+    add up to at most `cap`. One adapter is left as set. Returns a note when scaled."""
+    if len(adapters) < 2 or cap <= 0:
+        return None
+    total = sum(float(a["weight"]) for a in adapters)
+    if total <= cap + 1e-9:
+        return None
+    before = ", ".join(f"{a.get('role', 'image')} {float(a['weight']):g}" for a in adapters)
+    for a in adapters:
+        a["weight"] = round(float(a["weight"]) * cap / total, 2)
+    after = ", ".join(f"{a.get('role', 'image')} {a['weight']:g}" for a in adapters)
+    return (f"IP-Adapter weights added up to {total:g} (above {cap:g}, where renders wash out); "
+            f"scaled from {before} to {after}")
+
+
+# The character's IP-Adapter: STANDARD kept Cassandra's black undersuit under the armour and
+# her build, where PLUS made the render glossy and pushed the image's colours into it (same
+# seed, 2026-10-04). The style's IP-Adapter keeps ipadapter.preset (PLUS).
+def subject_preset(ip_cfg: dict) -> str:
+    return ip_cfg.get("subject_preset") or "STANDARD (medium strength)"
+
+
+def subject_cutout_default(ip_cfg: dict) -> bool:
+    """Remove the character image's background before its IP-Adapter (nobg.cutout)."""
+    return bool(ip_cfg.get("subject_cutout", True))

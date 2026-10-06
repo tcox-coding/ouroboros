@@ -101,3 +101,57 @@ def test_home_ai_finding_nothing_renders_without_it(home_run, tmp_path, monkeypa
     assert "none fits" in job["library_notes"]
     assert not [n for n in FakeComfy.graphs[-1].values() if n["class_type"] == "IPAdapterAdvanced"]
     assert _record(tmp_path)["request"]["subject_library"] == ""
+
+
+def _history_image(tmp_path):
+    d = tmp_path / "runs" / "manual" / "r1"
+    d.mkdir(parents=True)
+    Image.new("RGB", (64, 96), "red").save(d / "image_01.png")
+    return "manual/r1"
+
+
+def test_a_history_image_saves_as_character_and_style(tmp_path, monkeypatch):
+    from ouroboros import backends, server
+    run = _history_image(tmp_path)
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(server, "load_config", lambda: {"judge": {}})
+    seen = []
+
+    def make(cfg):
+        b = Backend({"tags": "red armour, short hair", "name": "Crimson Knight"})
+        seen.append(b)
+        return b
+    monkeypatch.setattr(backends, "make_backend", make)
+    poses = []
+    monkeypatch.setattr(server, "add_pose", lambda name, b64, fallback="", img=None: poses.append(name) or "arms_up")
+    out = server.save_run_image(run, "image_01.png", {"character": "", "style": "my style", "pose": "arms up"})
+    assert out == {"character": {"name": "crimson_knight"}, "style": {"name": "my style"}, "pose": {"name": "arms_up"}}
+    assert poses == ["arms up"]
+    char = reflib.RefLibrary(tmp_path, "character").get("crimson_knight")
+    assert char["description"] == "red armour, short hair" and char["size"] == [64, 96]
+    # a typed name isn't asked for again
+    assert any("name" not in b.calls[0][2]["properties"] for b in seen)
+
+
+@pytest.mark.parametrize("run, image", [("manual/r1", "../../config.json"), ("../x", "image_01.png"),
+                                        ("manual/r1", "missing.png")])
+def test_saving_refuses_paths_outside_history(tmp_path, monkeypatch, run, image):
+    from ouroboros import server
+    _history_image(tmp_path)
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    with pytest.raises(FileNotFoundError):
+        server.save_run_image(run, image, {"style": ""})
+
+
+def test_one_failed_kind_doesnt_stop_the_others(tmp_path, monkeypatch):
+    from ouroboros import backends, server
+    run = _history_image(tmp_path)
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(server, "load_config", lambda: {"judge": {}})
+    monkeypatch.setattr(backends, "make_backend", lambda cfg: Backend({"tags": "x", "name": "y"}))
+
+    def no_body(*a, **k):
+        raise ValueError("no person found in that image")
+    monkeypatch.setattr(server, "add_pose", no_body)
+    out = server.save_run_image(run, "image_01.png", {"style": "", "pose": ""})
+    assert out["pose"] == {"error": "no person found in that image"} and out["style"]["name"] == "y"

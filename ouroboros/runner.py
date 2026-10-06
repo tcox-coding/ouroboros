@@ -42,7 +42,12 @@ def load_config() -> dict:
 def save_config(changes: dict) -> dict:
     user = ROOT / "config.json"
     current = json.loads(user.read_text(encoding="utf-8")) if user.exists() else {}
-    user.write_text(json.dumps(_merge(current, changes), indent=2), encoding="utf-8")
+    merged = _merge(current, changes)
+    for role in ("prompt", "confirm"):
+        key = f"{role}_options"
+        if key in changes.get("judge", {}):
+            merged.setdefault("judge", {})[key] = copy.deepcopy(changes["judge"][key])
+    user.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return load_config()
 
 
@@ -188,7 +193,7 @@ class Runner:
                                  ("description", "positive", "negative", "merged", "dropped", "notes")}
             elif kind == "round":
                 cur["rounds"].append({
-                    "round": e["round"], "phase": e["phase"], "images": [rel_url(p) for p in e["images"]],
+                    "round": e["round"], "phase": e["phase"], "judge_model": e.get("judge_model"), "images": [rel_url(p) for p in e["images"]],
                     "scores": e["scores"], "params": e["params"], "best": e["round_best"],
                     "score": e["round_score"], "diagnosis": e["diagnosis"], "edit": e["edit"],
                     "prompt_tokens": e.get("prompt_tokens"), "differences": e.get("differences"),
@@ -198,7 +203,8 @@ class Runner:
             elif kind == "confirm" and cur["rounds"]:
                 cur["rounds"][-1].setdefault("confirms", []).append({
                     "image": rel_url(e["image"]), "first": e["first"], "recheck": e["recheck"],
-                    "passed": e["passed"], "diagnosis": e["diagnosis"]})
+                    "judge_model": e.get("judge_model"), "confirm_model": e.get("confirm_model"),
+                    "confirm_threshold": e.get("confirm_threshold"), "passed": e["passed"], "diagnosis": e["diagnosis"]})
                 cur.update(best_score=e["best_score"], best_image=rel_url(e["best_image"]),
                            cost_usd=round(e["cost_usd"], 4))
             elif kind == "memory" and cur["rounds"]:
@@ -244,6 +250,7 @@ class Runner:
             schedulers = comfy.choices("KSampler", "scheduler")
             flows = Workflows(ROOT / "workflows")
             judge = Judge(cfg["judge"], samplers, schedulers)
+            judge.prompt_backend = GatedBackend(judge.prompt_backend, self.gate)
             judge.backend = GatedBackend(judge.backend, self.gate)  # every job's LLM calls take turns
             judge.parallel = int(cfg.get("queue", {}).get("llm_parallel", 1))  # a round's calls side by side
             if judge.confirm_backend is not None:
@@ -307,6 +314,11 @@ class Runner:
         except Exception as e:
             self._log(traceback.format_exc())
             self.last_error = f"{key}: {e}"
+            billed = float(getattr(e, "cost_usd", 0.0))
+            with self.lock:
+                if key in self.jobs:
+                    self.jobs[key]["cost_usd"] = billed if getattr(e, "cost_is_total", False) else self.jobs[key].get("cost_usd", 0.0) + billed
+                self.session_cost += (self.jobs.get(key) or {}).get("cost_usd", billed)
             self._record_failure(key, str(e))
             queue.finish(folder, "failed")
             self._finish_state(key, "failed")

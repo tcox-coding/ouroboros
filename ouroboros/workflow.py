@@ -135,8 +135,15 @@ class Workflows:
 
     def build(self, p: GenParams, image_name: str, batch_size: int = 1, checkpoint: str | None = None,
               positive: str | None = None, size: tuple[int, int] | None = None,
-              control: dict | None = None, ipadapter: dict | None = None) -> dict:
+              control: dict | list | None = None, ipadapter: dict | list | None = None,
+              pick: int | None = None) -> dict:
+        """pick: render only image `pick` (0-based) of a batch of batch_size, exactly as the
+        batch would have drawn it: ComfyUI gives each image of a batch its own slice of the
+        seed's noise, so image 8 of a batch of 8 is seed + position 8, not the seed alone
+        (LatentFromBatch keeps its position, and the sampler draws that slice)."""
         use_reference, masked, _source = MODES[p.mode]
+        if pick is not None:
+            batch_size = max(int(batch_size), int(pick) + 1)
         graph = copy.deepcopy(self.graph)
         values = {
             "positive": p.positive if positive is None else positive,
@@ -174,14 +181,21 @@ class Workflows:
                     v["lora"] = _local_sep(v["lora"])
                 else:
                     node["inputs"][k] = _local_sep(v)
-        if control:
-            self._add_controlnet(graph, control, masked)
+        # One ControlNet (a dict) or several (a list: e.g. a pose skeleton and the edges that
+        # keep a character's shapes), chained in order.
+        if pick is not None:
+            ks = graph[self.spec["roles"]["seed"][0]]["inputs"]
+            graph["pick"] = {"class_type": "LatentFromBatch",
+                             "inputs": {"samples": ks["latent_image"], "batch_index": int(pick), "length": 1}}
+            ks["latent_image"] = ["pick", 0]
+        for n, c in enumerate(control if isinstance(control, list) else [control] if control else []):
+            self._add_controlnet(graph, c, masked, n)
         # One IP-Adapter (a dict) or several (a list: e.g. the subject's, then the style's).
         for n, ip in enumerate(ipadapter if isinstance(ipadapter, list) else [ipadapter] if ipadapter else []):
             self._add_ipadapter(graph, ip, n)
         return graph
 
-    def _add_controlnet(self, graph: dict, c: dict, masked: bool) -> None:
+    def _add_controlnet(self, graph: dict, c: dict, masked: bool, n: int = 0) -> None:
         """Insert a ControlNet between the prompts and the sampler:
         LoadImage(control image) -> [Inpaint Crop, same mask] -> ControlNetApplyAdvanced
         (Union ControlNet, type set by SetUnionControlNetType) -> KSampler positive/negative.
@@ -189,18 +203,29 @@ class Workflows:
         When the workflow repaints a masked region, its Inpaint Crop node cuts that region
         out and samples it at 1024x1024, so the control image goes through a copy of
         the same crop (same mask, same settings): the skeleton lands on the same pixels.
-        c: {"model", "image" (ComfyUI name), "type", "strength", "start", "end"}."""
+        c: {"model", "image" (ComfyUI name), "type", "strength", "start", "end", and optionally
+        "preprocess": "canny" to draw the image's edges first (ComfyUI's own Canny node), with
+        "low" / "high" thresholds}. Several are chained (n = 0, 1, ...); a later one with the
+        same model reuses the first one's loaded ControlNet."""
         sampler = self.spec["roles"]["seed"][0]
         ks = graph[sampler]["inputs"]
-        ids = iter(f"cn{i}" for i in range(1, 100))
-        load, loader, kind, apply = next(ids), next(ids), next(ids), next(ids)
+        ids = iter(f"cn{n * 10 + i}" for i in range(1, 10))
+        load, loader, kind, apply, pre = next(ids), next(ids), next(ids), next(ids), next(ids)
         graph[load] = {"class_type": "LoadImage", "inputs": {"image": c["image"]}}
-        graph[loader] = {"class_type": "ControlNetLoader", "inputs": {"control_net_name": c["model"]}}
+        first = "cn2"
+        if n and graph.get(first, {}).get("inputs", {}).get("control_net_name") == c["model"]:
+            loader = first
+        else:
+            graph[loader] = {"class_type": "ControlNetLoader", "inputs": {"control_net_name": c["model"]}}
         net = [loader, 0]
         if c.get("type"):
             graph[kind] = {"class_type": "SetUnionControlNetType", "inputs": {"control_net": net, "type": c["type"]}}
             net = [kind, 0]
         image = [load, 0]
+        if c.get("preprocess") == "canny":
+            graph[pre] = {"class_type": "Canny", "inputs": {"image": image, "low_threshold": float(c.get("low", 0.2)),
+                                                           "high_threshold": float(c.get("high", 0.5))}}
+            image = [pre, 0]
         crop = next((k for k, n in graph.items() if n.get("class_type") == "InpaintCropImproved"), None)
         if masked and crop:
             copy_id = next(ids)

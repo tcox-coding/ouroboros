@@ -66,7 +66,7 @@ def test_thumbnail_is_cached_regenerated_and_pruned(tmp_path):
 
 
 @pytest.mark.parametrize("rel", ["config.json", "runs/../config.json", "../outside.png", "cache/x.png"])
-def test_thumbnails_only_for_images_under_runs(tmp_path, rel):
+def test_thumbnails_only_for_images_in_the_image_folders(tmp_path, rel):
     (tmp_path / "config.json").write_text("{}")
     assert thumbs.get(tmp_path, rel) is None
 
@@ -152,6 +152,49 @@ def test_suggested_loras_are_unique_and_within_the_limit():
     assert [p["comfy_name"] for p in out["picks"]] == ["A", "B"]
 
 
+
+def test_the_lora_chooser_sees_every_target_image_with_what_it_is_for(tmp_path, monkeypatch):
+    """Home's style, subject and pose all go to the LLM choosing LoRAs, uploaded or saved,
+    each labelled; a saved one brings its tags. "AI picks" has no image yet."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from ouroboros import reflib, runner, server
+    from ouroboros.lora_picker import suggest_loras
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    reflib.RefLibrary(tmp_path, "character").add("knight", Image.new("RGB", (8, 8), "red"), describe=lambda im: "red hair")
+    pose_dir = tmp_path / "poses" / "kneel"
+    pose_dir.mkdir(parents=True)
+    Image.new("RGB", (8, 8), "blue").save(pose_dir / "source.png")
+    (pose_dir / "pose.json").write_text(json.dumps({"description": "kneeling"}))
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(buf, "PNG")
+    upload = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    refs = server.target_references({"style": {"image_b64": upload}, "subject": {"library": "knight"},
+                                     "pose": {}}, "kneel")
+    assert [(r, im.getpixel((0, 0)), tags) for r, im, tags in refs] == [
+        ("style", (0, 128, 0), ""), ("subject", (255, 0, 0), "red hair"), ("pose", (0, 0, 255), "kneeling")]
+    assert server.target_references({"style": {"library": "auto"}, "subject": {"library": "gone"}}, "auto") == []
+
+    seen = []
+
+    class Backend:
+        def complete(self, instructions, parts, *a, **k):
+            seen.extend(parts)
+            return {"picks": [], "notes": ""}, 0.0, 0
+    cards = [{"comfy_name": "A", "title": "A", "weight": {"min": 0.2, "max": 1.2, "default": 0.8}}]
+    suggest_loras(Backend(), cards, description="a knight", references=refs)
+    texts = [p["text"] for p in seen if "text" in p]
+    assert sum("image" in p for p in seen) == 3
+    assert any(t.startswith("STYLE IMAGE") for t in texts) and any(t.startswith("POSE IMAGE") for t in texts)
+    assert any(t.startswith("SUBJECT IMAGE") and "red hair" in t for t in texts)
+
+
 # ---- pose names ----
 
 @pytest.fixture
@@ -177,3 +220,26 @@ def test_a_given_name_wins_and_the_file_name_is_the_fallback(poses):
     assert lib.add("", img, lambda im: "old style tags only", fallback="") == "pose"
     assert lib.add("", img, lambda im: ("tags", "llm_name")) == "llm_name"
     assert lib.add("", img, lambda im: ("tags", "llm_name")) == "llm_name_2"  # never overwrites
+
+
+@pytest.mark.parametrize("kind", ["characters", "styles", "poses"])
+def test_library_images_get_thumbnails(tmp_path, kind):
+    from PIL import Image
+    src = tmp_path / kind / "cassandra" / "source.png"
+    src.parent.mkdir(parents=True)
+    Image.new("RGB", (768, 1344)).save(src)
+    t = thumbs.get(tmp_path, f"{kind}/cassandra/source.png")
+    assert t is not None and t.is_file() and max(Image.open(t).size) == thumbs.MAX_SIDE
+
+
+def test_a_transparent_image_keeps_its_transparency_in_its_thumbnail(tmp_path):
+    src = tmp_path / "runs" / "manual" / "r1" / "image_01_nobg.png"
+    src.parent.mkdir(parents=True)
+    img = Image.new("RGBA", (800, 1200), (0, 0, 0, 0))
+    img.paste((200, 30, 30, 255), (0, 0, 400, 1200))
+    img.save(src)
+    t = thumbs.get(tmp_path, "runs/manual/r1/image_01_nobg.png")
+    th = Image.open(t)
+    assert t.suffix == ".png" and th.mode == "RGBA" and th.getpixel((th.width - 2, 10))[3] == 0
+    src.unlink()
+    assert thumbs.prune(tmp_path) == 1 and not t.exists()

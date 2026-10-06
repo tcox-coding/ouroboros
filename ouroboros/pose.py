@@ -144,6 +144,52 @@ def fit(pose: dict, src_size: tuple[int, int], dst_size: tuple[int, int]) -> dic
             "size": list(dst_size)}
 
 
+def _torso(pose: dict, size: tuple[int, int]):
+    """(neck, mid-hip) in pixels of `size`, or None without a neck and a hip."""
+    body = pose.get("body") or []
+    neck = body[1] if len(body) > 1 else None
+    hips = [body[i] for i in (8, 11) if len(body) > i and body[i] is not None]
+    if neck is None or not hips:
+        return None
+    w, h = size
+    return ((neck[0] * w, neck[1] * h),
+            (sum(p[0] for p in hips) / len(hips) * w, sum(p[1] for p in hips) / len(hips) * h))
+
+
+def match_framing(target: dict, target_size: tuple[int, int], base: dict, base_size: tuple[int, int],
+                  size: tuple[int, int]) -> dict | None:
+    """`target` drawn into a `size` frame the way `base` is framed: scaled so its torso is as
+    long as base's and moved so its neck is where base's is. A new pose for a character keeps
+    the character's framing (a cowboy shot stays one; points that leave the frame are
+    dropped) instead of the pose image's: a full-body pose put a cowboy-shot character at half
+    the size, and its armour lost its detail (2026-10-04). None when either lacks a neck or hip."""
+    b = fit(base, base_size, size)
+    tb, bb = _torso(target, target_size), _torso(b, size)
+    if tb is None or bb is None:
+        return None
+    t_len = math.dist(*tb)
+    if t_len < 1:
+        return None
+    scale = math.dist(*bb) / t_len
+    (tnx, tny), (bnx, bny) = tb[0], bb[0]
+    tw, th = target_size
+    w, h = size
+
+    def move(pts):
+        out = []
+        for p in pts or []:
+            if p is None:
+                out.append(None)
+                continue
+            x = ((p[0] * tw - tnx) * scale + bnx) / w
+            y = ((p[1] * th - tny) * scale + bny) / h
+            out.append([round(x, 4), round(y, 4)] if 0 <= x <= 1 and 0 <= y <= 1 else None)
+        return out
+
+    return {**target, **{k: move(target.get(k)) for k in ("body", "left_hand", "right_hand", "face")},
+            "size": list(size)}
+
+
 def render(pose: dict, size: tuple[int, int], body: bool = True, hands: bool = True, face: bool = False,
            only_hand: str | None = None) -> Image.Image:
     """The skeleton as ControlNet openpose models expect it, on black."""
@@ -191,6 +237,44 @@ def render(pose: dict, size: tuple[int, int], body: bool = True, hands: bool = T
 
 def has_body(pose: dict | None, min_points: int = 4) -> bool:
     return bool(pose) and sum(p is not None for p in pose.get("body") or []) >= min_points
+
+
+# The limbs a pose is told apart by: arms, legs and the head's lean (shoulders and hips sit
+# the same in almost any pose and would only dilute the match).
+MATCH_LIMBS = {(2, 3): "right upper arm", (3, 4): "right forearm", (5, 6): "left upper arm",
+               (6, 7): "left forearm", (8, 9): "right thigh", (9, 10): "right shin", (11, 12): "left thigh",
+               (12, 13): "left shin", (1, 0): "head"}
+MATCH_TOLERANCE = 60  # degrees off at which a limb counts for nothing
+
+
+def limb_match(target: dict, found: dict | None, size: tuple[int, int]) -> tuple[float | None, list[str]]:
+    """How closely `found`'s limbs point the way `target`'s do (both normalized to a `size`
+    frame): 0-10, the mean over the limbs both show of 1 - angle off / MATCH_TOLERANCE, but no
+    more than 10 * (1 - the worst limb's angle off / 90): one arm clearly elsewhere isn't the
+    pose, however well the rest matches. Also the limbs 25 or more degrees off. (None, []) when fewer than two limbs can be compared.
+    Angles, not positions: they don't care where the character stands or how big it is.
+    Arms left at the sides came out 100-128 degrees off crossed arms, crossed ones within
+    21 (2026-10-05)."""
+    if not found:
+        return None, []
+    w, h = size
+    tb, fb = target.get("body") or [], found.get("body") or []
+    scores, off, worst = [], [], 0.0
+    for (i, j), name in MATCH_LIMBS.items():
+        pts = [b[k] if k < len(b) else None for b in (tb, fb) for k in (i, j)]
+        if None in pts:
+            continue
+        a = math.atan2((pts[1][1] - pts[0][1]) * h, (pts[1][0] - pts[0][0]) * w)
+        b = math.atan2((pts[3][1] - pts[2][1]) * h, (pts[3][0] - pts[2][0]) * w)
+        d = abs(math.degrees(a - b)) % 360
+        d = min(d, 360 - d)
+        scores.append(max(0.0, 1 - d / MATCH_TOLERANCE))
+        worst = max(worst, d)
+        if d >= 25:
+            off.append(f"{name} {d:.0f} degrees off")
+    if len(scores) < 2:
+        return None, []
+    return round(10 * min(sum(scores) / len(scores), max(0.0, 1 - worst / 90)), 2), off
 
 
 def hand_boxes(pose: dict, size: tuple[int, int], min_points: int = 12, pad: float = 0.3,

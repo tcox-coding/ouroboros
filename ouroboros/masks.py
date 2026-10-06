@@ -59,14 +59,20 @@ def keep_side(mask: Image.Image, text: str) -> Image.Image:
 
 
 def masked_image(comfy: ComfyClient, source: Path, source_name: str, text: str, out: Path,
-                 threshold: float = 0.35, grow_px: int = 12) -> Path:
-    """Write source with the region matching `text` made transparent; returns out."""
+                 threshold: float = 0.35, grow_px: int = 12, exclude: str = "") -> Path:
+    """Write source with the region matching `text` made transparent; returns out.
+    exclude: a region kept out of the mask (not grown), e.g. "face" when repainting the hair:
+    CLIPSeg's "hair" covers the face it frames, and a repainted face is another character."""
     img = Image.open(source).convert("RGBA")
     mask = clipseg_mask(comfy, source_name, text).resize(img.size, Image.BILINEAR)
     mask = mask.point(lambda v: 255 if v >= threshold * 255 else 0)
     mask = keep_side(mask, text)
     if grow_px > 0:
         mask = mask.filter(ImageFilter.MaxFilter(grow_px * 2 + 1))
+    if exclude.strip():
+        keep = clipseg_mask(comfy, source_name, exclude).resize(img.size, Image.BILINEAR)
+        keep = keep.point(lambda v: 255 if v >= threshold * 255 else 0)
+        mask = Image.fromarray(np.where(np.array(keep) > 0, 0, np.array(mask)).astype(np.uint8), "L")
     if not mask.getbbox():
         raise EmptyMask(f"CLIPSeg found nothing for '{text}'")
     alpha = Image.eval(mask, lambda v: 255 - v)

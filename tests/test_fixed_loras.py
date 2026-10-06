@@ -135,7 +135,7 @@ def test_write_prompts_is_told_about_the_selected_loras(monkeypatch):
             return {"positive": "jabstyle, 1girl", "negative": "", "dropped": [], "notes": ""}, 0.0, 0
     lib = Library({JAB: {"trigger_words": ["Jabstyle"], "title": "Jab Style", "examples": [], "type": "style",
                          "description": "thick ink lines"}})
-    monkeypatch.setattr(backends, "make_backend", lambda cfg: B())
+    monkeypatch.setattr(backends, "make_backend", lambda cfg, role="judge": B())
     monkeypatch.setattr(server, "lora_library", lambda cfg: lib)
     monkeypatch.setattr(runner, "lora_library", lambda cfg: lib, raising=False)
     server.preview_prompt({"description": "a knight", "loras": [{"name": JAB, "strength": 0.7}]})

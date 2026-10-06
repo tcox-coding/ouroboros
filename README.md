@@ -74,6 +74,30 @@ pills at the top show when ComfyUI, the judge and the workflow are ready.
 Your settings are saved to `config.json` and your keys to `api_keys.json`; neither is
 committed.
 
+Settings offers separate models for visual judging, prompt writing/edit planning, and
+confirmation on the selected provider. Choosing a model fills its recommended options;
+save the form to apply them. Confirmation must pass independently, with separate
+thresholds for automatic runs and character edits. Their scoring rubrics are different.
+
+**Compare & zoom** on character-edit candidates and automatic-run results opens the
+reference and candidate together, with linked zoom, scrolling and dragging.
+
+To compare the DeepInfra candidates and current baselines on your own labelled images:
+
+```bash
+.venv/bin/python -m ouroboros.model_benchmark
+```
+
+This sends the images in `eval/judge_set.json` to DeepInfra and incurs API charges.
+It compares two configurations per model, repeats the full review and confirmation
+sets, and checks prompt writing and multiple-image input. It stops starting calls once
+recorded spending reaches $15 (requests already in flight can finish). Raw evidence is
+saved under `eval/results/profiles-*/`; successful tested profiles are cached in
+`eval/model_profiles.json` and take precedence over built-in recommendations. These
+are the best settings among those tried, and fitted thresholds remain provisional
+until validated on a separate image set. Designer thresholds are not inferred from
+the automatic-run evaluation set.
+
 If you use a classified LoRA library ([lora-classifier](IMPLEMENTATION.md#one-lora-library)
 output in `loras.catalog_dir`), write the short LoRA descriptions the AI chooses LoRAs by once,
 and again after adding LoRAs:

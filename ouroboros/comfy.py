@@ -9,6 +9,16 @@ from pathlib import Path
 import requests
 
 
+
+def combo_options(spec: list) -> list[str]:
+    """The values of a combo input from /object_info. Older nodes list them directly
+    ([[...values], {...}]); newer ones say ["COMBO", {"options": [...]}] (ComfyUI 0.37's
+    UpscaleModelLoader)."""
+    first = spec[0] if spec else []
+    if first == "COMBO":
+        return list((spec[1] if len(spec) > 1 else {}).get("options") or [])
+    return list(first) if isinstance(first, list) else []
+
 class ComfyError(RuntimeError):
     pass
 
@@ -26,7 +36,7 @@ class ComfyClient:
     def choices(self, node_type: str, input_name: str) -> list[str]:
         """Allowed values of a combo input, e.g. KSampler sampler_name."""
         info = requests.get(f"{self.url}/object_info/{node_type}", timeout=30).json()
-        return list(info[node_type]["input"]["required"][input_name][0])
+        return combo_options(info[node_type]["input"]["required"][input_name])
 
     def upload_image(self, path: Path, subfolder: str = "ouroboros") -> str:
         """Upload into ComfyUI's input folder; returns the name LoadImage expects. Each

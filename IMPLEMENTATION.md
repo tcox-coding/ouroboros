@@ -208,9 +208,10 @@ the description locks the prompt boxes, text in either prompt box locks the desc
 into, so you can see and edit it. With a reference image and no description at all, the prompt is
 written from the image.
 
-**Targets: Style, Subject, Pose.** Each has its own panel: behind a checkbox, an image, a
-saved one (Styles / Characters / Poses tabs) or **AI picks**. Nothing behind the box counts
-while it is unticked. Words about any of them go in the description, which the prompt writer
+**Targets: Style, Subject, Pose.** Three tiles, each with a switch and a picture of what it is
+set to; clicking one opens its options under them (one at a time): an image, a saved one
+(Styles / Characters / Poses pages, favourites first, filterable by folder) or **AI picks**.
+Nothing behind a tile counts while its switch is off. Words about any of them go in the description, which the prompt writer
 reads alongside the images. See *Three targets* below. As in a job, img2img starts from the
 subject (else style) image centre-cropped to the output size (transparency flattened onto
 white), unless an IP-Adapter carries it; **auto** size follows that image's shape, or with
@@ -223,11 +224,26 @@ nothing without those. **Let the LLM choose** sends your prompt and reference wi
 of them and asks which suit this render; it answers with menu numbers, picks nothing when nothing
 fits, and costs about half a cent (~28K tokens, mostly a cached prefix).
 
-**Run automatically** hands the same settings to the refinement loop, with the loop-only knobs
-(threshold, rounds, candidates, hand refine, LoRA mode) under *Automatic run options*.
+**Run automatically** hands the same settings to the refinement loop, IP-Adapter settings
+included (each target's on/off and weight, the character preset, background removal; a job
+that doesn't set them uses `ipadapter.*`), with the loop-only knobs (threshold, rounds,
+candidates, hand refine, LoRA mode) under *Automatic run options*. A saved style or character
+counts as the image it needs.
 
-Each tab owns one thing: Home makes images, Queue lists jobs, History holds finished runs, LoRAs
+Each page owns one thing: Home makes images, Queue lists jobs, History holds finished runs, LoRAs
 browses the library, Poses / Styles / Characters manage the saved ones, Settings holds the defaults.
+
+**Layout.** The pages are in a sidebar (the menu button folds it to icons, or on a phone slides
+it over the page); the top bar holds the ComfyUI / Judge / Workflows status and **Generate**,
+which goes back to Home. There is no start button: queuing a job (Run automatically, Run again,
+a prompt-library Queue) starts the loop, and **Stop after round** shows while it runs. A chime plays when a Home generation finishes, and a longer one when an automatic run or a Designer edit does. Home keeps
+the form on the left and the result on the right, in view while the form scrolls: a carousel of
+the images (arrows, ← / →, thumbnails), the newest History generation when the queue has none.
+Prompts, generation settings and the automatic run's options fold away (the settings fold into
+a one-line summary). The Run page shows each round as its best image; clicking one opens its
+candidates, scores and the judge's notes under that row, and the prompt, reproduction details,
+checkpoint and hands sections stay folded until opened. Everything uses the Outfit font and the
+mahogany-to-brown-red palette in `:root` of `static/index.html`.
 
 ### Three targets: style, subject, pose
 A render used to aim at one reference image standing for everything. Now it has three targets
@@ -246,6 +262,18 @@ An empty target falls back to the job's main image, so a job with one image and 
 behaves exactly as before (`Targets.split` is false). Jobs store targets in `job.json`
 (`{"style": {"image": "style.png", "text": "..."}}`); an automatic run needs at least one image.
 
+A job that gives some targets and leaves the rest to its description ("this character, arms
+crossed") is different (`Targets.goal_for_missing`): falling back to the character image
+made the judge hold the pose and style to that image's, and the loop repainted from it, so
+every round converged back to the original picture. Now a missing pose is judged against the
+GOAL (the description and prompt) and nothing starts from the reference
+(`lc["pose_from_goal"]`). A missing style follows the description when it names one ("in
+Incase style, flat colours"); one cheap text-only call (`prompter.names_style`) decides, and
+when the description names none, the character image is the style target too, so the run
+keeps the character's own look (`run.json` records `style_from`). The LoRA picker follows the
+same rule: with a style the description names, it matches LoRAs to those words, not to the
+character image.
+
 ### Saved styles and characters
 `reflib.py` keeps them as poses are kept: `styles/<name>/` and `characters/<name>/`, each
 `source.png` plus `meta.json` with the tags the LLM wrote when it was added (style tags only for
@@ -253,6 +281,15 @@ a style; the character's features and outfit only for a character). Added from t
 and **Characters** tabs (one image, several, or a folder; unnamed ones are named by the LLM),
 deleted into `_removed/`. Choosing one for a target uses its image, and its tags as the target's
 words when none are typed.
+
+**Folders and favourites** (`organize.py`), for poses too, live in each library's
+`_library.json` (`{"items": {name: {"folder", "favorite"}}, "folders": [...]}`), not in the
+folder layout, so an item's name, which jobs and History refer to, never changes when it is
+filed. A folder is a path like `anime/female`. Each page lists the folders on the left (with
+All, Favorites and Not in a folder) and the cards on the right; a card is starred, moved with
+its folder button or dragged onto a folder. Removing a folder moves its contents up a level.
+Adding puts new ones in the folder typed in the form (the open folder by default), and an
+uploaded folder keeps its own subfolders inside it.
 
 **AI picks** (`pose_picker.pick_item`) gives the LLM the description and prompt and a menu of
 names and tags (a text shortlist of 40 for big libraries); it must answer with a name from the
@@ -321,6 +358,22 @@ carry, since "the same character" survives a pose change here where a descriptio
 It goes in between the model and the sampler (`workflow._add_ipadapter`), so it stacks with the pose
 ControlNet: character from one image, pose from another.
 
+Two things kept the character from surviving a new pose (2026-10-04, a saved character in a saved
+crossed-arms pose: the armour carried over, the face and hair didn't, and half the renders kept
+the arms down):
+- **The encoder sees a square.** The IP-Adapter's image encoder centre-crops to 224 × 224, so a
+  full-body portrait lost its head and legs. The character image is now padded to a square in its
+  own backdrop colour first (`nobg.square_for_ip`, after the background cut-out; cached in
+  `cache/cutouts`). The style image is left as it is.
+- **The prompt copied the character image's pose.** A saved pose went to the prompt writer only as
+  a note, and with the character image as the only body in view it wrote "arms at sides". The
+  imposed pose is now the prompt's POSE target (its saved description), on Home and in jobs.
+
+The LoRA chooser sees the same images, labelled: Home's **Also choose LoRAs** gets the style,
+subject and pose (uploaded or saved, with their tags), and an automatic run's picker gets the
+subject and pose beside its style reference (`loop.lora_context`; with a one-image model they
+are tiles of its grid). A pose still set to "AI picks" has no image yet.
+
 Install: `ComfyUI_IPAdapter_plus` in `custom_nodes`, `CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`
 in `models/clip_vision`, and the SDXL adapters (`ip-adapter-plus_sdxl_vit-h`,
 `ip-adapter-plus-face_sdxl_vit-h`, `ip-adapter_sdxl_vit-h`) in the install's `models/ipadapter`
@@ -332,6 +385,22 @@ the image out - saturated colour, melted anatomy. 0.4-0.6 `linear` is clean, as 
 `style transfer` modes at higher weights, so the default is **0.6**. Expect it to carry palette,
 hair and the character of a costume rather than reproduce an outfit exactly; for exact costume
 fidelity the refinement loop and its judge are still the better tool.
+
+Three things from same-seed tests of a character on a flat beige backdrop (2026-10-04):
+- **The character's adapter is STANDARD** (`ipadapter.subject_preset`). PLUS made the render
+  glossy and pushed the image's colours into it; STANDARD kept the black undersuit under the
+  armour and the build. The style's adapter keeps `ipadapter.preset` (PLUS).
+- **Its background is removed first** (`ipadapter.subject_cutout`, on; a checkbox on Home). An
+  adapter carries the whole image, backdrop included, and the beige tinted every render peach.
+  `nobg.cutout` puts the character on neutral grey, once per image (`cache/cutouts/`); without
+  a remover the image is used as it is, with a warning.
+- **Two adapters are capped** at 0.6 together (`ipadapter.max_combined_weight`). Subject 0.6 +
+  style 0.5 washed a render out to flat cream; both are scaled down in proportion, and the page
+  warns before rendering and on the finished task.
+
+A History rerun takes the adapters as that entry recorded them (each one's preset and weight
+after any scaling, and whether the background was removed), so it still matches after the
+defaults change.
 
 ### Judge backends
 Every backend gets the same ordered text and image parts and the same JSON schema.
@@ -765,6 +834,169 @@ the judged image), and the run's `upscale.json` records it for History. Upscalin
 checkbox under Generation on Home, an option of Run automatically, `loop.upscale` in
 Settings, and an **Upscale** button by each image in History. History upscales run as queue
 tasks, like auto-fix.
+
+### Background removal
+`nobg.py` cuts the character out of a History image onto a transparent PNG with ComfyUI's own
+remover (`LoadBackgroundRemovalModel` -> `RemoveBackground`, ComfyUI 0.37+) and BiRefNet
+(`models/background_removal/birefnet.safetensors`, `background_removal.model`). It works on the
+image's latest version (upscaled, else auto-fixed), saves `<name>_nobg.png` next to it and records
+it in the run's `nobg.json`. It needs no recorded settings, so a failed run's image works too.
+Thumbnails of transparent images are PNGs, so History shows the transparency.
+
+### Saving from History, favorites, warnings
+History and Favorites show both kinds of entry (a Home generation, an automatic run) on the same
+card with the same seven buttons, in order: favourite, view, rerun (Rerun on Home / Run again),
+use its prompts on Home (a run's are its best image's, as rendered), tools, save to disk,
+delete. A button that doesn't apply is greyed out in its place (on Favorites, delete: take the
+star off first). **Tools** holds auto-fix, upscale, background removal and save to library for
+each image. Each image can be saved as a character, style and/or pose (any of its versions), named or
+named by the LLM, and downloaded with **Save to disk**. ☆ adds a run to **Favorites**
+(`favorites.json`, git-ignored): it points at the run folder, which holds every setting, and can
+be renamed there; a favorite can't be deleted from History until it is unfavorited. A task's
+warnings (pose skipped, background not removed, adapters scaled, a failed auto-fix...) show on the
+Queue tab and under Result, and are kept in the run's `run.json` for History's **View**.
+
+### Designer
+The **Design** page holds characters (`designs/<id>/`, git-ignored): a card per character, made with
+**Add to Designer** under a Home result or in a History entry's Tools (the image's prompts, LoRAs,
+checkpoint and seed come along, from its `run.json`) or from an uploaded image. Opening one shows
+its original and the versions kept from edits (its catalog, `catalog/`); ★ picks which one the
+card shows.
+
+**Drawn again from its own noise first.** A batch gives each image its own slice of the seed's
+noise (ComfyUI draws the whole batch's noise from the seed, image by image), so `image_08.png`
+of a batch of 8 is that seed *and* place 8. Rendered alone with `LatentFromBatch` (an empty
+latent of 8, image 8 picked, `Workflows.build(pick=7)`), it comes back the same image (mean
+difference 0.2/255), and with "arms at sides" changed to "arms crossed" the same character with
+crossed arms: five characters made by hand this way (one tag changed each time, image 8 kept)
+were all the same person. So a character drawn from noise alone (txt2img, denoise 1, no
+reference, ControlNet or IP-Adapter; recorded when it's added, `server._noise_origin`) is edited
+that way first: its original prompt with only the tags the change replaces swapped in place
+(`swap_tags`; nothing added from the description, nothing else dropped), at its seed, place,
+size and settings (`regen_source`, `_render_regen`). Each round renders the change's tags at
+the round's weight, a stronger one, and for a pose with a skeleton the pose ControlNet too; the
+best variant sets the next weight. Two rounds without the change and it falls back to the edits
+below. A version kept from these renders records the same, so it can be edited the same way.
+On Generate, **Remake just this one** (under a result, and in History's Tools) loads that run's
+settings with the batch's seed and the image's place: edit the prompt and Generate draws only
+that image (`batch_pick` in the request).
+
+An **edit** changes exactly one of three things, and is optimised toward the starting image
+everywhere else (`designer.py`, a queue task of kind `design`):
+
+- **Style**: img2img from the image (denoise ~0.65) over its own edges (Canny on the union
+  ControlNet, ~0.45) and pose, the new style's tags in the prompt and, for a saved style or an
+  image, a style-transfer IP-Adapter (~0.6). The old style's LoRAs are always dropped and the
+  LoRA chooser adds one style LoRA when one in the library gives the new look. No character
+  IP-Adapter: fed the base image it carries the old style (three rounds up to denoise 0.81
+  stayed in it). Words alone barely move a Pony checkpoint (watercolor never showed); an image
+  of the style or a fitting LoRA does.
+- **Pose**: img2img from the character's image (denoise ~0.8, the knob between following the
+  pose and keeping the outfit; at 0.7 the arms didn't move) with the new pose's skeleton (a saved
+  pose or an image; OpenPose ~0.85). No character IP-Adapter (`designer.subject_ip`, default 0):
+  same seed and skeleton, one change at a time, the adapter was what changed the art style -
+  muted colours, softer lines, a grey bodysuit at 0.6 and still at 0.3 - while img2img alone kept
+  the flat-colour look and, with the original's own tags, the face. From
+  noise with only the adapter, plate armour came back as a bodysuit every round (outfit 5-7);
+  from the image it kept its plates and gems (outfit 8-9) and passed in three rounds. The skeleton is framed like the character's image (`pose.match_framing`:
+  scaled to its torso, its neck where the character's is), so a cowboy shot stays one: drawn as
+  framed in a full-body pose image, the character came out at half size and its armour lost its
+  detail. The plan writes the outfit as seen into the prompt, since the figure is drawn anew. Once
+  the pose is right and the rest kept the best candidate is refined from (img2img ~0.45); a
+  candidate with mistakes isn't (refining one kept its sword and grey backdrop for three rounds).
+- **Features**: the LLM names the region to repaint, covering where the part is now and where it
+  will be ("hair and shoulders" for hair let down), and a region to protect ("face"): CLIPSeg's
+  "hair" covers the face it frames, and a repainted face is another character. Only that region is
+  repainted (inpaint, denoise from 0.85: at 0.7 a bun stayed a bun for two rounds); a change to
+  the whole figure is img2img + edges + IP-Adapter.
+
+Planning is two LLM calls. The first describes the base image **from the image alone**
+(`describe`): shown the image beside its prompt, the planner copied the prompt ("silver body
+armor", "green sword on back", "plain background") over an image of olive-gold armour, no sword
+and a beige backdrop, and every render followed the prompt. The second writes the plan from that
+description. The original prompt's quality and style tags are reused verbatim (everything
+before "1girl", `split_style`). Its other tags are kept too, because they drew the face: written
+afresh from the description ("serious expression", "thin arched brows") the face drifted, while
+the original's "cute face, soft jawline" kept it. A text-only call (`review_tags`) checks each of
+them against the description and drops those it doesn't show ("green sword on back") and those
+the change replaces (the old arms and gaze); the planner's change tags are added. Tags the
+description merely contradicts stay: "(silver body armor:1.3)" is what drew the original's muted,
+pale-gold plate, and dropped as "the image is gold" (with "gold-colored segmented armor" from the
+description in its place) every render's armour came out saturated, ornate gold. The planner
+never sees the original's description of the character. Every detail to keep carries a prompt
+tag and is added if missing (`with_keep_tags`), except garments the original prompt already
+names in its own words. Only a style edit may drop LoRAs (a pose edit once dropped
+the character's style LoRAs and the whole look changed). Plus guards for the negative and checks
+that the change is made. Each round renders `designer.batch` candidates and the
+judge compares each with the starting image as a **checklist**, and the scores are computed
+from its answers: each detail to keep is "same / slightly different / different / missing"
+(10 / 7 / 2 / 0 in its aspect), each requested change "done / partly / not done", other
+differences cost their aspect 1 (minor) or 3 (major). Asked for 0-10 scores directly,
+Qwen3-VL-30B gave outfit 10 to silver armour that should have been olive-gold, while listing
+the difference, and every edit "passed" in round 1. The judge also gets face close-ups of both
+images (DWPose face points; at 512 px a cowboy shot's face is ~40 px) and a description of the
+candidate made by a call that hasn't seen the checklist, and is never shown the prompt (it copied
+it). The backdrop is measured, not judged: its colour along the top and upper sides, in delta E;
+a shift over 6 costs background points, and the loop then names the base's backdrop in the
+prompt, weighted 1.2 at most (at 1.4-1.5 the beige bled into the hair and armour). Judges differ a lot here: on the same two candidates
+Qwen3-VL-30B-A3B scored 93.9 and 83.2 (one would pass), gemma-4-26B-A4B 59 and 64.4, naming the
+changed expression, missing freckles and glowing gems. `judge.confirm_model`, when set, makes
+the pass check alone, and a candidate it turns down takes its score and verdict, so the next
+round isn't steered by the false pass (Qwen's 85 for arms still at the sides was turned down by
+gemma at 61.6, and two rounds then refined it anyway). A pose edit with a skeleton also
+**measures** the pose: DWPose on the candidate, each limb's angle against the skeleton's
+(`pose.limb_match`; arms left at the sides were 100-128 degrees off at the forearms, crossed
+ones within 21), and the change scores no more than that. With the skeleton measured as matched,
+a low change (the gaze, the head turn) no longer raises denoise and the ControlNet: gemma held
+"change 6.7" on candidates measured 8.4-9.3, the knobs climbed to 0.9 / 1.0 and the face and
+armour drifted every round. Nor may the judge's tips remove the original prompt's own tags in a
+pose or feature edit (gemma's "-(silver body armor:1.3), +gold armor" made shiny gold armour,
+then a bikini).
+
+Judge models on this edit (Cassandra, crossed arms; 4 rounds): Qwen3-VL-30B-A3B as the judge
+and gemma-4-26B-A4B as `judge.confirm_model` is the pairing that works - Qwen is fast and
+lenient, gemma turns down its false passes (61.6 and 74.6 for Qwen's 85+). gemma as the main
+judge was slower (1411 s against 807 s) and, before the fixes above, its strict gaze checks
+drove the knobs into drifting the character. The judge's tips may not remove the details-to-keep tags
+either (Qwen's "-light freckles" in round 1 cost every later candidate its freckles), tips that
+say "no ..." are dropped (a prompt can't say no), and "the character drifting" lowers a pose
+edit's denoise to 0.78 at most (at 0.75 the arms stayed down in 5 of 6). Score = 35% change + 50% kept (identity weighted 2, outfit 1.5, the rest 1) + 15%
+quality, capped below 60 while the change scores under 6 (the unchanged image can never win),
+below 84 while identity or outfit is under 8, and lower still for any kept aspect under 7: a
+changed face (6) and an armour turned bodysuit (7) each passed before these caps. The round's best verdict moves the settings:
+the change missing -> more denoise, looser edges, a stronger pose or style adapter, a bigger
+mask; the rest drifting -> less denoise, tighter edges, a stronger character adapter, a lighter
+style image; nearly there with the rest kept -> a small step on (otherwise a round changes
+nothing). Plan and judge go by the base image, not its prompt, where they disagree (a prompt's
+"arms crossed" over hanging arms scored every style candidate's pose 4). Its tags
+for lost details go into the prompt (never removing the change's own). It stops when a candidate
+reaches the threshold (85) and a second look agrees, or after `max_rounds`; **One more round**
+runs one more from where it stopped. Any candidate can be **kept** (into the character's catalog)
+or made a **new card** of its own; a kept version can be the start of the next edit. **Delete edit** removes an edit
+and all its renders (each shows its size in MB; versions kept from it stay, the catalog has its
+own copies). **Move it into…** merges a character that is really another one: its image becomes
+a kept version of that character, its kept versions and edits move along (each version keeps
+the settings that made it in full, so it can still be edited, and from its own noise when it
+was drawn that way), and the card goes to `designs/_removed/`.
+
+Under the versions, each edit is a card like them (its best render, or its latest; status, score or
+count, size; icons to show all its renders below, run another round, edit, stop or delete).
+A character's page has two tabs: **Versions and edits**, and the **Editor** (it replaces the
+Edit dialog, and keeps what you type while the page refreshes). In the Editor, **Automatic** is
+the AI edit above; unticked, it's a manual edit: the positive and negative prompts, steps, CFG,
+sampler, scheduler, seed, batch, size, checkpoint and LoRAs, filled in from the settings that
+made the version you start from, drawn from *its own noise* (its seed and place in its batch;
+offered when it was drawn from noise alone), *new noise* (the seed, or a random one each time)
+or *the image itself* (img2img at a strength). As on Generate it can add the pose ControlNet (the image's
+own pose, a saved pose or an uploaded image; a new pose is framed like the character's image,
+`pose.match_framing`), the character IP-Adapter (from the image you start from, background
+removed and squared) and a style IP-Adapter (a saved style or an image); a render guided by any
+of them records that it isn't redrawable from noise alone. It's queued like any edit (`run_manual`, a
+session of kind `manual`, nothing judged); its renders can be kept or made a card like any
+candidate, each recording its seed and place so it can be drawn again; **Render again** and
+**Edit these settings** take it from there. After **Render** the editor stays as it was, prompts
+and settings unchanged, and what it rendered appears under it (with Keep / New card) as it
+finishes, so you can adjust and render again.
 
 ### Pose ControlNet and the pose library
 Uses the xinsir ControlNet Union SDXL "promax" model (`models/controlnet/xinsir_union_sdxl_promax.safetensors`)

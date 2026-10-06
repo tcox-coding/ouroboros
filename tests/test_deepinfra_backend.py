@@ -1,5 +1,6 @@
 """DeepInfra models differ in which JSON modes they take; the backend steps down until one works."""
 import json
+import pytest
 
 from ouroboros import backends
 
@@ -49,7 +50,7 @@ def test_a_bare_500_twice_for_a_schema_steps_down_to_json_mode(monkeypatch):
     assert data == {"a": 3} and sent == ["json_schema", "json_schema", "json_object"]
 
 
-def test_too_many_images_keeps_the_first_and_notes_the_rest(monkeypatch, tmp_path):
+def test_too_many_images_uses_a_sheet_instead_of_dropping_images(monkeypatch, tmp_path):
     from PIL import Image
     paths = []
     for i in range(3):
@@ -67,4 +68,75 @@ def test_too_many_images_keeps_the_first_and_notes_the_rest(monkeypatch, tmp_pat
     monkeypatch.setattr(backends, "_IMAGE_LIMITS", {})
     b = backends.DeepInfraBackend({"model": "lim/two", "retries": 0})
     data, _c, _t = b.complete("x", [{"image": p} for p in paths], {"type": "object"}, "t", 64)
-    assert data == {"a": 4} and sent == [3, 2]
+    assert data == {"a": 4} and sent == [3, 1]
+
+
+def test_sheet_contains_every_panel_and_keeps_images_unmodified():
+    from PIL import Image
+    colors = [(230, 20, 20), (20, 230, 20), (20, 20, 230)]
+    images = [Image.new("RGB", (64, 96), color) for color in colors]
+    parts = [part for i, image in enumerate(images) for part in ({"text": f"Candidate {i}"}, {"image": image})]
+    sheet, labels = backends.labelled_sheet(parts, 128)
+    assert labels == [f"Image {i + 1}: Candidate {i}" for i in range(3)]
+    assert [sheet.getpixel(((i % 2) * 128 + 64, (i // 2) * 160 + 96)) for i in range(3)] == colors
+    assert all(im.size == (64, 96) for im in images)
+
+
+def test_billed_retries_are_included_even_when_the_final_attempt_fails(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test")
+    bad = ok({})
+    bad._data["choices"][0]["message"]["content"] = "not JSON"
+    replies = [bad, ok({"ok": True})]
+    monkeypatch.setattr(backends.requests, "post", lambda *a, **k: replies.pop(0))
+    b = backends.DeepInfraBackend({"model": "test", "retries": 1})
+    assert b.complete("", [], {}, "t", 512)[1] == pytest.approx(0.0002)
+    replies[:] = [bad, bad]
+    with pytest.raises(backends.CompletionError) as exc:
+        b.complete("", [], {}, "t", 512)
+    assert exc.value.cost_usd == pytest.approx(0.0002)
+    assert exc.value.prompt_tokens == 20
+
+
+def test_truncated_attempts_count_towards_cost(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test")
+    truncated = ok({})
+    truncated._data["choices"][0]["finish_reason"] = "length"
+    replies = [truncated, ok({"ok": True})]
+    monkeypatch.setattr(backends.requests, "post", lambda *a, **k: replies.pop(0))
+    b = backends.DeepInfraBackend({"model": "test", "retries": 0, "max_tokens": 1024})
+    assert b.complete("", [], {}, "t", 512)[1] == pytest.approx(0.0002)
+
+
+def test_an_answer_cut_off_without_reasoning_is_a_loop_retried_with_a_penalty_not_more_room(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test")
+    looping = ok({})
+    looping._data["choices"][0].update(finish_reason="length", message={"content": "masterpiece, " * 50})
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append(dict(json))
+        return replies.pop(0)
+    monkeypatch.setattr(backends.requests, "post", post)
+    replies = [looping, ok({"ok": True})]
+    b = backends.DeepInfraBackend({"model": "test", "retries": 0, "max_tokens": 4096, "temperature": 0})
+    assert b.complete("", [], {}, "t", 512)[0] == {"ok": True}
+    assert sent[1]["max_tokens"] == 4096 and sent[1]["frequency_penalty"] == 0.5 and sent[1]["temperature"] == 0.4
+    replies[:] = [looping, looping]  # still looping: one nudged retry, then the error says so
+    with pytest.raises(backends.CompletionError, match="repeating itself"):
+        b.complete("", [], {}, "t", 512)
+
+
+def test_an_answer_cut_off_while_reasoning_gets_more_room(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test")
+    thinking = ok({})
+    thinking._data["choices"][0].update(finish_reason="length", message={"content": "", "reasoning_content": "hmm"})
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append(dict(json))
+        return replies.pop(0)
+    monkeypatch.setattr(backends.requests, "post", post)
+    replies = [thinking, ok({"ok": True})]
+    b = backends.DeepInfraBackend({"model": "test", "retries": 0, "max_tokens": 4096})
+    b.complete("", [], {}, "t", 512)
+    assert sent[1]["max_tokens"] == 8192 and "frequency_penalty" not in sent[1]

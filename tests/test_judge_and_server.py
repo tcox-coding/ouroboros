@@ -141,3 +141,34 @@ def test_parallel_reviews_keep_the_jobs_llm_queue_label(monkeypatch):
     finally:
         set_label(None)
     assert seen == ["job-a"] * 3
+
+
+def test_every_route_the_page_calls_is_served_with_its_method():
+    """The page's api("/x") is a GET and api("/x", body) a POST; History's "Save to library"
+    once went to a route only the GET handler had, so every save answered "not found"."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    page = (root / "static" / "index.html").read_text(encoding="utf-8")
+    src = (root / "ouroboros" / "server.py").read_text(encoding="utf-8")
+    get_src = src[src.index("def do_GET"):src.index("def do_POST")]
+    post_src = src[src.index("def do_POST"):src.index("def prepare_comfy")]
+
+    def routes(code):
+        found = set(re.findall(r'path == "([^"]+)"', code))
+        for group in re.findall(r"path in \(([^)]*)\)", code):
+            found |= set(re.findall(r'"([^"]+)"', group))
+        return found
+    ref = set(re.findall(r'"(/api/[a-z]+)": "(?:style|character)"', src))
+    ref_post = set(re.findall(r'"(/api/[a-z]+/organize)": "', src))
+    ref_post |= set(re.findall(r'"(/api/designs[a-z/]*)": ', src))  # DESIGN_ROUTES
+    served = {"GET": routes(get_src) | ref, "POST": routes(post_src) | ref | ref_post | {f"{r}/remove" for r in ref}}
+    calls = {(re.split(r"[?$]", m.group(2))[0], "POST" if m.group(3) else "GET")
+             for m in re.finditer(r'api\(\s*([`"])(/api/[^`"]*?)\1\s*(,)?', page)}
+    assert calls and {c for c in calls if c[0] not in served[c[1]]} == set()
+
+
+def test_saving_a_history_image_to_the_library_is_a_post(server):
+    code, body = post(server, "/api/library/save-image", {"run": "manual/no_such_run", "image": "image_01.png",
+                                                          "save": {"character": ""}})
+    assert code == 500 and "no History entry" in body["error"]

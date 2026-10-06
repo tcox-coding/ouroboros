@@ -76,7 +76,14 @@
       }
     },
     "scoring": "per_candidate",
-    "confirm_model": ""
+    "confirm_model": "",
+    "prompt_model": "",
+    "prompt_options": {},
+    "confirm_options": {},
+    "confirm_thresholds": {
+      "loop": null,
+      "designer": null
+    }
   },
   "loop": {
     "threshold": 62,
@@ -171,7 +178,15 @@
     "end": 1.0,
     "subject_weight": 0.6,
     "style_weight": 0.5,
-    "style_weight_type": "style transfer"
+    "style_weight_type": "style transfer",
+    "max_combined_weight": 0.6,
+    "subject_preset": "STANDARD (medium strength)",
+    "subject_cutout": true
+  },
+  "designer": {
+    "threshold": 85,
+    "max_rounds": 6,
+    "batch": 3
   },
   "autofix": {
     "max_rounds": 2,

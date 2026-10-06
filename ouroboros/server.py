@@ -21,16 +21,20 @@ from urllib.parse import parse_qs, unquote, urlparse
 import requests
 
 from . import generate as generate_mod
-from . import autofix, keys, thumbs
+from . import autofix, designer, favorites, keys, organize, thumbs
+from . import nobg as nobg_mod
 from . import upscale as upscale_mod
+from .comfy import combo_options
 from .backends import deepinfra_models, ollama_models
 from .jobs import IMAGE_EXTS, STATUSES, Queue, load_job
 from .loras import checkpoint_base, compatible
 from .params import lora_stem
+from .targets import max_combined
 from .runner import ROOT, Runner, comfy_launcher, load_config, lora_library, rel_url, save_config
 
 STATIC = ROOT / "static"
-FILE_DIRS = ("jobs", "runs", "cache/lora_images", "cache/reruns", "poses", "styles", "characters")  # what /files/ serves
+FILE_DIRS = ("jobs", "runs", "cache/lora_images", "cache/reruns", "poses", "styles", "characters",
+             "designs")  # what /files/ serves
 REF_ROUTES = {"/api/styles": "style", "/api/characters": "character"}  # the saved style / character libraries
 runner = Runner()
 queue = Queue(ROOT / "jobs")
@@ -130,6 +134,14 @@ def preview_prompt(data: dict) -> dict:
         if lib and lib != "auto" and not t.get("image_b64") and (got := resolve(ROOT, r, lib)):
             t["image_b64"] = base64.b64encode(Path(got["image"]).read_bytes()).decode()
             t["text"] = (t.get("text") or "").strip() or got["description"]
+    pose_choice = data.get("pose_library") or ""
+    pose_t = raw.setdefault("pose", {}) if pose_choice and pose_choice != "auto" else None
+    if pose_t is not None and not pose_t.get("image_b64"):  # a saved pose: its photo and description
+        try:
+            pose_t["image_b64"] = base64.b64encode(pose_library().source(pose_choice).read_bytes()).decode()
+            pose_t["text"] = (pose_t.get("text") or "").strip() or pose_library().get(pose_choice).get("description", "")
+        except (OSError, ValueError):
+            pass
     tg = Targets(**{r: Target(image(t.get("image_b64")), (t.get("text") or "").strip())
                     for r, t in raw.items() if r in ("style", "subject", "pose") and isinstance(t, dict)})
     texts = any(t.text for _, t in tg.items())
@@ -137,7 +149,7 @@ def preview_prompt(data: dict) -> dict:
     split = texts or (tg.style.image is not None and tg.subject.image is not None)
     if not split and images and reference is None and cfg["loop"].get("prompt_sees_reference", True):
         reference = tg.subject.image or tg.style.image or images[0]
-    return write_prompt(make_backend(cfg["judge"]), data.get("description", ""), data.get("prompt", ""),
+    return write_prompt(make_backend(cfg["judge"], "prompt"), data.get("description", ""), data.get("prompt", ""),
                         data.get("negative", ""), style_pos, style_neg, None if split else reference,
                         cfg["judge"].get("image_max_side", 512), selected_lora_notes(cfg, data.get("loras")),
                         targets=prompt_parts(tg) if split else None)
@@ -165,6 +177,20 @@ def runs_list(limit: int = 60) -> list[dict]:
     return out
 
 
+def favorites_list() -> list[dict]:
+    """Favourite History entries, newest favourite first: each run's History entry (however
+    old it is) with its favourite name ("fav_name") and when it was added."""
+    out = []
+    for run, fav in sorted(favorites.load(ROOT).items(), key=lambda kv: kv[1].get("added", ""), reverse=True):
+        try:
+            d = favorites.run_dir(ROOT, run)
+            entry = _manual_entry(d) if run.startswith("manual/") else _loop_entry(d)
+        except (OSError, ValueError):
+            entry = {"run": run, "kind": "missing", "status": "missing"}
+        out.append({**entry, "fav_name": fav.get("name", ""), "fav_added": fav.get("added")})
+    return out
+
+
 def _loop_entry(d: Path) -> dict:
     s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
     s["kind"] = "loop"
@@ -173,6 +199,7 @@ def _loop_entry(d: Path) -> dict:
     s["best_thumb"] = thumbs.url(ROOT, d / "best.png") if s["best_url"] else None
     s["autofix"] = autofix_view(d)
     s["upscale"] = upscale_view(d)
+    s["nobg"] = nobg_view(d)
     return s
 
 
@@ -196,6 +223,7 @@ def _manual_entry(d: Path) -> dict:
     ref = d / (rec.get("reference") or "reference.png")
     pose = d / rec["pose_reference"] if rec.get("pose_reference") else None
     return {"kind": "manual", "run": f"manual/{d.name}", "status": status, "error": error,
+            "warning": rec.get("warning"),
             "started": rec.get("started") or started, "finished": rec.get("finished"),
             "images": images, "thumbs": [thumbs.url(ROOT, f) for f in files],
             "best_url": images[0] if images else None,
@@ -209,7 +237,7 @@ def _manual_entry(d: Path) -> dict:
             "loras": rec.get("loras") or [], "timing": rec.get("timing"),
             "ipadapter": bool(rec.get("ipadapter")), "control": bool(rec.get("control")),
             "request": rec.get("request") or {}, "autofix": autofix_view(d), "upscale": upscale_view(d),
-            "image_names": [f.name for f in files]}
+            "nobg": nobg_view(d), "image_names": [f.name for f in files]}
 
 
 def run_detail(name: str) -> dict:
@@ -225,7 +253,8 @@ def run_detail(name: str) -> dict:
             if kind == "confirm" and rounds:
                 rounds[-1].setdefault("confirms", []).append({
                     "image": rel_url(d / r["image"]), "first": r["first"], "recheck": r["recheck"],
-                    "passed": r["passed"], "diagnosis": r["review"].get("diagnosis", "")})
+                    "judge_model": r.get("judge_model"), "confirm_model": r.get("confirm_model"),
+                    "confirm_threshold": r.get("confirm_threshold"), "passed": r["passed"], "diagnosis": r["review"].get("diagnosis", "")})
             elif kind == "memory" and rounds:
                 rounds[-1]["memory"] = r["summary"]
             elif kind == "round":
@@ -235,7 +264,7 @@ def run_detail(name: str) -> dict:
                     c = next((c for c in r["review"].get("candidates", []) if c.get("index") == pos), {})
                     diffs[i] = c.get("differences") or []
                 rounds.append({
-                    "round": r["round"], "phase": r["phase"],
+                    "round": r["round"], "phase": r["phase"], "judge_model": r.get("judge_model"),
                     "images": [rel_url(d / f"r{r['round']:02d}_c{i}.png") for i in range(n)],
                     "scores": r["scores"], "best": r["best"], "score": r["scores"][r["best"]],
                     "params": [f"{p['mode']} seed={p['seed']} cfg={p['cfg']:g} denoise={p['denoise']:g}"
@@ -307,19 +336,50 @@ def pose_library():
 def poses_list() -> dict:
     from . import pose
     return {"available": pose.available(),
-            "items": [{"name": p["name"], "description": p["description"], "size": p["size"],
-                       "preview": rel_url(p["preview"]), "source": rel_url(p["source"])}
-                      for p in pose_library().list()]}
+            **organize.annotate(pose_library().root, [
+                {"name": p["name"], "description": p["description"], "size": p["size"],
+                 "preview": rel_url(p["preview"]), "source": rel_url(p["source"]),
+                 "thumb": thumbs.url(ROOT, p["source"])}
+                for p in pose_library().list()])}
 
 
-def add_pose(name: str, image_b64: str, fallback: str = "") -> str:
-    """Save a pose. With no name, the LLM names it from the pose (else `fallback`, the file name)."""
+def _decode_image(image_b64: str):
     import io
     from PIL import Image
-    from .backends import make_backend
-
     img = Image.open(io.BytesIO(base64.b64decode(image_b64.split(",", 1)[-1])))
     img.load()
+    return img
+
+
+def target_references(targets, pose_choice=None) -> list[tuple]:
+    """Home's style / subject / pose as (role, image, tags) for the LoRA chooser: an uploaded
+    image, else the saved style, character or pose chosen. "AI picks" has no image yet."""
+    from PIL import Image
+
+    from .reflib import resolve
+    out = []
+    for role in ("style", "subject", "pose"):
+        t = (targets or {}).get(role) or {}
+        lib = (pose_choice if role == "pose" else t.get("library")) or ""
+        try:
+            if t.get("image_b64"):
+                out.append((role, _decode_image(t["image_b64"]), ""))
+            elif lib and lib != "auto" and role == "pose":
+                with Image.open(pose_library().source(lib)) as im:
+                    out.append((role, im.copy(), pose_library().get(lib).get("description", "")))
+            elif lib and lib != "auto" and (got := resolve(ROOT, role, lib)):
+                with Image.open(got["image"]) as im:
+                    out.append((role, im.copy(), got["description"]))
+        except (OSError, ValueError):
+            continue  # a saved one that has gone missing: choose without it
+    return out
+
+
+def add_pose(name: str, image_b64: str, fallback: str = "", img=None) -> str:
+    """Save a pose. With no name, the LLM names it from the pose (else `fallback`, the file name)."""
+    from .backends import make_backend
+
+    img = img if img is not None else _decode_image(image_b64)
     cfg = load_config()
 
     def describe(image) -> tuple[str, str]:
@@ -342,22 +402,42 @@ def ref_library(kind: str):
 
 
 def ref_list(kind: str) -> dict:
-    return {"items": [{"name": p["name"], "description": p["description"], "size": p["size"],
-                       "source": rel_url(p["source"]), "thumb": thumbs.url(ROOT, p["source"])}
-                      for p in ref_library(kind).list()]}
+    return organize.annotate(ref_library(kind).root, [
+        {"name": p["name"], "description": p["description"], "size": p["size"],
+         "source": rel_url(p["source"]), "thumb": thumbs.url(ROOT, p["source"])}
+        for p in ref_library(kind).list()])
 
 
-def add_ref(kind: str, name: str, image_b64: str, fallback: str = "") -> str:
+LIBRARY_ROUTES = {"/api/poses/organize": "pose", "/api/styles/organize": "style",
+                  "/api/characters/organize": "character"}
+
+
+def library_dir(kind: str) -> Path:
+    return pose_library().root if kind == "pose" else ref_library(kind).root
+
+
+def organize_library(kind: str, data: dict) -> dict:
+    """Folders and favourites of a saved library (see organize.py). One of:
+    {"names", "folder"?, "favorite"?}, {"new_folder"}, {"move_folder", "to"}."""
+    d = library_dir(kind)
+    if data.get("new_folder") is not None:
+        organize.add_folder(d, data["new_folder"])
+    elif data.get("move_folder") is not None:
+        organize.move_folder(d, data["move_folder"], data.get("to") or "")
+    else:
+        names = [str(n) for n in data.get("names") or []]
+        if not names:
+            raise ValueError("choose something to file")
+        organize.update(d, names, folder=data.get("folder"), favorite=data.get("favorite"))
+    return poses_list() if kind == "pose" else ref_list(kind)
+
+
+def add_ref(kind: str, name: str, image_b64: str, fallback: str = "", img=None) -> str:
     """Save a style or character. The LLM writes its tags and, with no name, names it."""
-    import io
-
-    from PIL import Image
-
     from .backends import make_backend
     from .reflib import KINDS
 
-    img = Image.open(io.BytesIO(base64.b64decode(image_b64.split(",", 1)[-1])))
-    img.load()
+    img = img if img is not None else _decode_image(image_b64)
     cfg = load_config()
 
     def describe(image) -> tuple[str, str]:
@@ -371,6 +451,241 @@ def add_ref(kind: str, name: str, image_b64: str, fallback: str = "") -> str:
         except Exception:  # the LLM is optional here: the image is what matters
             return "", ""
     return ref_library(kind).add(name.strip(), img, describe, fallback=fallback or kind)
+
+
+
+LIBRARY_KINDS = ("character", "style", "pose")
+
+
+def save_run_image(run: str, image: str, save: dict) -> dict:
+    """Save one image of a History entry to the character, style and/or pose library.
+    save: {kind: name}; an empty name has the LLM name it. The kinds are saved side by
+    side (each is one LLM call). Returns {kind: {"name"} or {"error"}}."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from PIL import Image
+
+    d = (ROOT / "runs" / run).resolve()
+    if not d.is_relative_to((ROOT / "runs").resolve()) or not d.is_dir():
+        raise FileNotFoundError(f"no History entry {run}")
+    names = generate_mod._image_names(d, [image])
+    if not names:
+        raise FileNotFoundError(f"no image {image} in {run}")
+    kinds = {k: str(v or "").strip() for k, v in (save or {}).items() if k in LIBRARY_KINDS}
+    if not kinds:
+        raise ValueError("choose character, style and/or pose")
+    with Image.open(d / names[0]) as im:
+        img = im.copy()
+    fallback = d.name
+
+    def one(kind: str) -> tuple[str, dict]:
+        try:
+            if kind == "pose":
+                return kind, {"name": add_pose(kinds[kind], "", fallback, img=img.copy())}
+            return kind, {"name": add_ref(kind, kinds[kind], "", fallback, img=img.copy())}
+        except Exception as e:
+            return kind, {"error": str(e)}
+    with ThreadPoolExecutor(len(kinds)) as pool:
+        return dict(pool.map(one, kinds))
+
+# ---- Designer -------------------------------------------------------------------------------
+
+def _project_file(url: str) -> Path:
+    """The file behind a /files/ URL of a History image, saved character or design image."""
+    rel = unquote(urlparse(url or "").path).removeprefix("/files/")
+    target = (ROOT / rel).resolve()
+    if not any(target.is_relative_to((ROOT / d).resolve()) for d in ("runs", "characters", "styles", "designs")):
+        raise FileNotFoundError(url)
+    if not target.is_file() or target.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise FileNotFoundError(url)
+    return target
+
+
+def _made_with(image: Path) -> tuple[dict, dict]:
+    """(params, source) of a History image: the settings that made it, as Designer keeps
+    them ({} for an image without recorded settings, e.g. a saved character)."""
+    runs = (ROOT / "runs").resolve()
+    if not image.is_relative_to(runs):
+        return {}, {"image": _files_url(str(image))}
+    rel = image.relative_to(runs).parts
+    run = "/".join(rel[:2]) if rel[0] == "manual" else rel[0]
+    try:
+        t = fix_target(run)
+    except Exception:
+        return {}, {"run": run, "image": image.name}
+    p = t["params"]
+    params = {"positive": t["positive"] or p.positive, "negative": p.negative, "seed": p.seed, "steps": p.steps,
+              "cfg": p.cfg, "sampler_name": p.sampler_name, "scheduler": p.scheduler,
+              "loras": [list(x) for x in p.loras], "checkpoint": t.get("checkpoint")}
+    params.update(_noise_origin(runs / run, image.name))
+    return params, {"run": run, "image": image.name}
+
+
+def _noise_origin(run_dir: Path, name: str) -> dict:
+    """Where a History image sits in the noise that drew it (designer.regen_source): its place
+    in its batch ("image_08.png" -> 7; a remade single image keeps the place it had), the batch
+    size, the size, and whether it was drawn from noise alone (txt2img at denoise 1, no
+    reference image, ControlNet or IP-Adapter), which is when that seed and place draw it again."""
+    try:
+        rec = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    m = re.fullmatch(r"image_(\d+)\.png", name)
+    if not m or not isinstance(rec.get("request"), dict):
+        return {}
+    q = rec["request"]
+    pick = generate_mod.batch_pick(q)
+    index = int(m.group(1)) - 1
+    of = pick[1] if pick else int(q.get("batch_size") or rec.get("batch") or index + 1)
+    mode = (rec.get("params") or "").split(" ", 1)[0] if isinstance(rec.get("params"), str) else ""
+    from_noise = (mode in ("", "txt2img") and float(q.get("denoise") or 1.0) >= 0.999 and not rec.get("control")
+                  and not rec.get("ipadapter") and not rec.get("reference") and not rec.get("subject_reference")
+                  and not rec.get("pose_reference"))
+    return {"batch_index": index, "batch_of": max(of, index + 1), "size": rec.get("size"),
+            "from_noise": bool(from_noise)}
+
+
+def _design_urls(design: dict) -> dict:
+    d = designer.design_dir(ROOT, design["id"])
+    url = lambda rel: rel_url(d / rel)  # noqa: E731
+    thumb = lambda rel: thumbs.url(ROOT, d / rel) or url(rel)  # noqa: E731
+    return {**design, "cover_url": url(design.get("cover") or "original.png"),
+            "cover_thumb": thumb(design.get("cover") or "original.png"),
+            "original_url": url("original.png"), "original_thumb": thumb("original.png"),
+            "catalog": [{**e, "url": url(e["image"]), "thumb": thumb(e["image"])} for e in design.get("catalog", [])]}
+
+
+def designs_list() -> list[dict]:
+    busy = {b.split("/")[0] for b in generate_mod.design_busy()}
+    return [{**{k: v for k, v in _design_urls(x).items() if k not in ("params", "description")},
+             "busy": x["id"] in busy} for x in designer.list_designs(ROOT)]
+
+
+def design_detail(design_id: str) -> dict:
+    _backfill_noise_origin(design_id)  # the manual editor offers "its own noise" when it's known
+    design = _design_urls(designer.load(ROOT, design_id))
+    busy = generate_mod.design_busy()
+    jobs = {(j.get("design"), j.get("session")): j for j in generate_mod.queue_status() if j.get("kind") == "design"}
+    sessions = []
+    for sid in reversed(design.get("sessions", [])):
+        try:
+            s = designer.load_session(ROOT, design_id, sid)
+        except (OSError, ValueError):
+            continue
+        sdir = designer.session_dir(ROOT, design_id, sid)
+        job = jobs.get((design_id, sid))
+        for r in s.get("rounds", []):
+            for c in r["candidates"]:
+                c["url"] = rel_url(sdir / c["image"])
+                c["thumb"] = thumbs.url(ROOT, sdir / c["image"]) or c["url"]
+        sessions.append({**{k: v for k, v in s.items() if k not in ("knobs",)},
+                         "summary": designer.change_text(s),
+                         "base_url": rel_url(designer.file_of(ROOT, design_id, s["base"]))
+                         if (designer.design_dir(ROOT, design_id) / s["base"]).is_file() else None,
+                         "target_url": rel_url(sdir / "target.png") if (sdir / "target.png").is_file() else None,
+                         "busy": f"{design_id}/{sid}" in busy,
+                         "size_mb": round(sum(f.stat().st_size for f in sdir.rglob("*") if f.is_file()) / 1e6, 1),
+                         "job": {"id": job["id"], "status": job["status"], "state": job.get("state")} if job else None})
+    # Candidates already kept, so the page can mark them: "<session>/<image>".
+    kept = sorted(f"{e.get('session')}/{e.get('candidate', '')}" for e in design["catalog"])
+    return {**design, "sessions": sessions, "kept": kept, "settings": designer.settings(load_config())}
+
+
+def create_design(data: dict) -> dict:
+    if data.get("image_b64"):
+        tmp = ROOT / "designs" / "_upload.png"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        _decode_image(data["image_b64"]).convert("RGB").save(tmp)
+        try:
+            design = designer.create(ROOT, tmp, name=data.get("name") or "", source={"upload": True})
+        finally:
+            tmp.unlink(missing_ok=True)
+        return design
+    image = _project_file(data.get("image") or "")
+    params, source = _made_with(image)
+    if not params and data.get("design"):  # an image of another design: its settings come along
+        try:
+            params = designer.load(ROOT, data["design"]).get("params") or {}
+        except (OSError, ValueError):
+            pass
+    return designer.create(ROOT, image, name=data.get("name") or "", params=params, source=source)
+
+
+def _backfill_noise_origin(design_id: str) -> None:
+    """A character added before its noise origin was recorded gets it from its History run."""
+    with designer._lock:
+        design = designer.load(ROOT, design_id)
+        src, params = design.get("source") or {}, design.get("params") or {}
+        if "from_noise" in params or not src.get("run") or not src.get("image"):
+            return
+        origin = _noise_origin((ROOT / "runs" / src["run"]).resolve(), src["image"])
+        if origin and (ROOT / "runs").resolve() in (ROOT / "runs" / src["run"]).resolve().parents:
+            design["params"] = {**params, **origin}
+            designer.save(ROOT, design)
+
+
+def design_edit(data: dict) -> dict:
+    target = None
+    if data.get("image_b64"):
+        target = ROOT / "designs" / "_target.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _decode_image(data["image_b64"]).convert("RGB").save(target)
+    _backfill_noise_origin(data["id"])
+    if data.get("manual"):  # your own prompts and settings: rendered, not judged
+        q, files = dict(data["manual"]), {}
+        try:
+            for key in ("style", "pose"):
+                b64 = q.pop(f"{key}_b64", None)
+                if b64:
+                    files[key] = ROOT / "designs" / f"_{key}_upload.png"
+                    files[key].parent.mkdir(parents=True, exist_ok=True)
+                    _decode_image(b64).convert("RGB").save(files[key])
+            sess = designer.new_manual_session(ROOT, data["id"], base=data.get("base") or "original.png",
+                                               request=q, style_image=files.get("style"), pose_image=files.get("pose"))
+        finally:
+            for f in files.values():
+                f.unlink(missing_ok=True)
+        name = designer.load(ROOT, data["id"])["name"]
+        gen_id = generate_mod.start_design(data["id"], sess["id"], label=f"{name}: manual edit"[:140])
+        return {"session": sess["id"], "id": gen_id}
+    try:
+        num = lambda k, lo, hi: max(lo, min(hi, float(data[k]))) if data.get(k) not in (None, "") else None  # noqa: E731
+        sess = designer.new_session(ROOT, data["id"], base=data.get("base") or "original.png", kind=data.get("kind"),
+                                    change={"text": data.get("text") or "", "style": data.get("style") or "",
+                                            "pose": data.get("pose") or ""},
+                                    threshold=num("threshold", 50, 100),
+                                    max_rounds=int(num("max_rounds", 1, 20)) if num("max_rounds", 1, 20) else None,
+                                    target_image=target)
+    finally:
+        if target is not None:
+            target.unlink(missing_ok=True)
+    name = designer.load(ROOT, data["id"])["name"]
+    gen_id = generate_mod.start_design(data["id"], sess["id"], label=f"{name}: {designer.change_text(sess)}"[:140])
+    return {"session": sess["id"], "id": gen_id}
+
+
+def design_continue(data: dict) -> dict:
+    key = f"{data['id']}/{data['session']}"
+    if key in generate_mod.design_busy():
+        raise ValueError("that edit is still running")
+    sess = designer.load_session(ROOT, data["id"], data["session"])
+    rounds = max(1, min(10, int(data.get("rounds") or 1)))
+    sess.update(status="queued", confirmed=False)
+    designer.save_session(ROOT, data["id"], sess)
+    name = designer.load(ROOT, data["id"])["name"]
+    gen_id = generate_mod.start_design(data["id"], data["session"], rounds=rounds,
+                                       label=f"{name}: one more round of {designer.change_text(sess)}"[:140])
+    return {"id": gen_id}
+
+
+def design_keep(data: dict) -> dict:
+    if data.get("to") == "new":
+        return {"design": designer.new_from_candidate(ROOT, data["id"], data["session"], data["image"],
+                                                      data.get("name") or "")}
+    entry = designer.keep(ROOT, data["id"], data["session"], data["image"])
+    if data.get("cover"):
+        designer.update(ROOT, data["id"], cover=entry["image"])
+    return {"entry": entry}
 
 
 _hand_jobs: dict[str, threading.Thread] = {}
@@ -455,8 +770,11 @@ def remove_run(name: str) -> None:
         raise FileNotFoundError(name)
     if name in runner.active_runs() or (manual and leaf in generate_mod.active_runs()):
         raise RuntimeError("that run is in progress")
+    if name in favorites.load(ROOT):
+        raise RuntimeError("that entry is a favorite; take it off the Favorites page first")
     if name in generate_mod.busy_targets():
-        raise RuntimeError("an auto-fix or upscale of this entry is queued or running; remove it from the queue first")
+        raise RuntimeError("an auto-fix, upscale or background removal of this entry is queued or running; "
+                           "remove it from the queue first")
     trash = ROOT / "runs" / "_removed"
     trash.mkdir(exist_ok=True)
     dest = trash / (f"manual_{leaf}" if manual else leaf)
@@ -585,7 +903,7 @@ def checkpoints() -> dict:
     names = []
     try:
         info = requests.get(f"{cfg['comfy_url']}/object_info/CheckpointLoaderSimple", timeout=5).json()
-        names = info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+        names = combo_options(info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"])
     except Exception:
         folder = Path(cfg.get("checkpoints_dir", ""))
         names = sorted(p.name for p in folder.glob("*.safetensors")) if folder.is_dir() else []
@@ -634,26 +952,27 @@ def lora_thumb(lora_id: str) -> Path | None:
 
 
 def model_preset(model: str, backend: str = "ollama") -> dict | None:
-    presets = json.loads((Path(__file__).parent / "model_presets.json").read_text(encoding="utf-8"))["presets"]
-    return next((p for p in presets if backend in p.get("backends", [backend])
-                 and re.search(p["match"], model or "", re.I)), None)
+    from .model_profiles import preset
+    return preset(model, backend)
 
 
 def service_status() -> dict:
     cfg = load_config()
     status = {"backend": cfg["judge"]["backend"],
               "model": cfg["judge"].get(cfg["judge"]["backend"], {}).get("model") or "",
-              "confirm_model": cfg["judge"].get("confirm_model") or ""}
+              "confirm_model": cfg["judge"].get("confirm_model") or "",
+              "prompt_model": cfg["judge"].get("prompt_model") or "",
+              "ip_max_combined": max_combined(cfg.get("ipadapter", {}))}
     launcher = comfy_launcher(cfg).status()
     status["comfyui"] = {k: launcher[k] for k in ("state", "message")}
     try:
         requests.get(f"{cfg['comfy_url']}/system_stats", timeout=2).raise_for_status()
         status["comfy"] = "ok"
         ks = requests.get(f"{cfg['comfy_url']}/object_info/KSampler", timeout=5).json()["KSampler"]["input"]["required"]
-        status["samplers"], status["schedulers"] = ks["sampler_name"][0], ks["scheduler"][0]
+        status["samplers"], status["schedulers"] = combo_options(ks["sampler_name"]), combo_options(ks["scheduler"])
         try:
             up = requests.get(f"{cfg['comfy_url']}/object_info/UpscaleModelLoader", timeout=5).json()
-            status["upscale_models"] = up["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
+            status["upscale_models"] = combo_options(up["UpscaleModelLoader"]["input"]["required"]["model_name"])
         except Exception:
             status["upscale_models"] = []
     except Exception as e:
@@ -689,20 +1008,29 @@ def service_status() -> dict:
 def public_settings() -> dict:
     cfg = load_config()
     j = cfg["judge"]
+    from .model_profiles import role_config
+    role_fields = {"temperature", "top_p", "top_k", "num_ctx", "num_predict", "think", "max_tokens",
+                   "context_tokens", "reasoning_effort", "image_detail"}
+    effective = {role: {k: v for k, v in role_config(j, role).get(j["backend"], {}).items() if k in role_fields}
+                 for role in ("prompt", "confirm")}
     return {
         "comfy_url": cfg["comfy_url"],
         "prompt_library": cfg.get("prompt_library", ""),
         "judge": {
+            "prompt_model": j.get("prompt_model", ""),
+            "prompt_options": j.get("prompt_options", {}), "confirm_options": j.get("confirm_options", {}),
+            "effective_options": effective,
+            "confirm_thresholds": j.get("confirm_thresholds", {}),
             "backend": j["backend"], "contact_sheet": j.get("contact_sheet", False),
             "image_max_side": j.get("image_max_side", 512), "confirm_model": j.get("confirm_model", ""),
             "ollama": {k: j["ollama"].get(k) for k in ("url", "model", "num_ctx", "num_predict", "temperature",
                                                         "top_p", "top_k", "keep_alive", "think")},
             "openai": {k: j["openai"].get(k) for k in ("model", "reasoning_effort", "image_detail")},
             "deepinfra": {k: j["deepinfra"].get(k) for k in ("model", "temperature", "top_p", "max_tokens",
-                                                             "reasoning_effort", "context_tokens")},
+                                                             "reasoning_effort", "context_tokens", "max_images")},
             "deepinfra_key_set": bool(keys.get("deepinfra")),
         },
-        "loop": cfg["loop"],
+        "loop": cfg["loop"], "designer": designer.settings(cfg),
         "defaults": cfg["defaults"],
         "comfyui": cfg.get("comfyui", {}),
         "queue": cfg.get("queue", {}),
@@ -783,6 +1111,7 @@ class Handler(BaseHTTPRequestHandler):
                     **runner.snapshot(),
                     "queue": [job_info(f, "pending") for f in queue.pending()],
                     "runs": runs_list(),
+                    "favorites": favorites_list(),
                     "bin": bin_info(),
                     "generations": generate_mod.queue_status(),
                 })
@@ -845,6 +1174,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(checkpoints())
             if path == "/api/poses":
                 return self.send_json(poses_list())
+            if path == "/api/designs":
+                return self.send_json({"designs": designs_list()})
+            if path == "/api/design":
+                return self.send_json(design_detail(q.get("id", [""])[0]))
             if path in REF_ROUTES:
                 return self.send_json(ref_list(REF_ROUTES[path]))
             if path == "/api/model-preset":
@@ -922,18 +1255,15 @@ class Handler(BaseHTTPRequestHandler):
                 cards = lora_cards()
                 if not cards:
                     return self.send_json({"error": "no classified LoRAs found (loras.catalog_dir)"}, 400)
-                reference = None
-                if data.get("image_b64"):
-                    import io
-                    from PIL import Image
-                    reference = Image.open(io.BytesIO(base64.b64decode(data["image_b64"].split(",", 1)[-1])))
+                reference = _decode_image(data["image_b64"]) if data.get("image_b64") else None
                 keep = {l.get("name") for l in data.get("keep") or []}
                 out = suggest_loras(make_backend(cfg["judge"]), cards,
                                     data.get("positive", ""), data.get("negative", ""),
                                     data.get("description", ""), reference,
                                     int(data.get("max") or cfg.get("loras", {}).get("max_loras", 3)),
                                     cfg["judge"].get("image_max_side", 512),
-                                    [c for c in cards if c["comfy_name"] in keep])
+                                    [c for c in cards if c["comfy_name"] in keep],
+                                    references=target_references(data.get("targets"), data.get("pose_library")))
                 return self.send_json(out)
             if path == "/api/sampler/suggest":
                 from . import settings_advisor as advisor
@@ -972,6 +1302,16 @@ class Handler(BaseHTTPRequestHandler):
                     data = {**generate_mod.rerun_request(ROOT, data["rerun"]), "estimate": data.get("estimate")}
                 gen_id = generate_mod.start(data)
                 return self.send_json({"id": gen_id, **(generate_mod.status(gen_id) or {})})
+            if path == "/api/library/save-image":
+                return self.send_json(save_run_image(data["run"], data["image"], data.get("save") or {}))
+            if path == "/api/favorites":
+                return self.send_json(favorites.set(ROOT, data["run"], data.get("name")))
+            if path == "/api/favorites/remove":
+                favorites.remove(ROOT, data["run"])
+                return self.send_json({"ok": True})
+            if path == "/api/remove-bg":
+                check_nobg_model()
+                return self.send_json({"id": generate_mod.start_nobg(data["run"], data.get("images") or [])})
             if path == "/api/upscale":
                 gen_id = generate_mod.start_upscale(data["run"], data.get("images") or [])
                 return self.send_json({"id": gen_id})
@@ -1032,17 +1372,32 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/loras/refresh":
                 return self.send_json({"started": refresh_loras()})
             if path == "/api/poses":
-                return self.send_json({"name": add_pose(data.get("name") or "", data["image_b64"],
-                                                         data.get("fallback") or "")})
+                name = add_pose(data.get("name") or "", data["image_b64"], data.get("fallback") or "")
+                if organize.clean_folder(data.get("folder")):
+                    organize.update(library_dir("pose"), [name], folder=data["folder"])
+                return self.send_json({"name": name})
             if path == "/api/poses/remove":
                 pose_library().remove(data["name"])
+                organize.forget(library_dir("pose"), data["name"])
                 return self.send_json({"ok": True})
             if path in REF_ROUTES:
-                return self.send_json({"name": add_ref(REF_ROUTES[path], data.get("name") or "", data["image_b64"],
-                                                       data.get("fallback") or "")})
+                kind = REF_ROUTES[path]
+                name = add_ref(kind, data.get("name") or "", data["image_b64"], data.get("fallback") or "")
+                if organize.clean_folder(data.get("folder")):
+                    organize.update(library_dir(kind), [name], folder=data["folder"])
+                return self.send_json({"name": name})
             if path.removesuffix("/remove") in REF_ROUTES and path.endswith("/remove"):
-                ref_library(REF_ROUTES[path.removesuffix("/remove")]).remove(data["name"])
+                kind = REF_ROUTES[path.removesuffix("/remove")]
+                ref_library(kind).remove(data["name"])
+                organize.forget(library_dir(kind), data["name"])
                 return self.send_json({"ok": True})
+            if path in LIBRARY_ROUTES:
+                try:
+                    return self.send_json(organize_library(LIBRARY_ROUTES[path], data))
+                except ValueError as e:
+                    return self.send_json({"error": str(e)}, 400)
+            if path in DESIGN_ROUTES:
+                return self.send_json(DESIGN_ROUTES[path](data))
             if path == "/api/runs/refine-hands":
                 return self.send_json(refine_hands_run(data["run"]))
             if path == "/api/runs/remove":
@@ -1055,6 +1410,36 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"error": f"missing field {e}"}, 400)
         except Exception as e:
             return self.send_json({"error": str(e)}, 500)
+
+
+DESIGN_ROUTES = {
+    "/api/designs": lambda d: {"design": create_design(d)},
+    "/api/designs/update": lambda d: {"design": designer.update(ROOT, d["id"], name=d.get("name"), cover=d.get("cover"))},
+    "/api/designs/remove": lambda d: designer.remove(ROOT, d["id"]) or {"ok": True},
+    "/api/designs/edit": design_edit,
+    "/api/designs/continue": design_continue,
+    "/api/designs/keep": design_keep,
+    "/api/designs/catalog/remove": lambda d: designer.remove_from_catalog(ROOT, d["id"], d["vid"]) or {"ok": True},
+    "/api/designs/session/remove": lambda d: design_session_remove(d),
+    "/api/designs/version/rename": lambda d: designer.rename_version(ROOT, d["id"], d["image"], d.get("name")) and {"ok": True},
+    "/api/designs/merge": lambda d: design_merge(d),
+}
+
+
+def design_session_remove(data: dict) -> dict:
+    if f"{data['id']}/{data['session']}" in generate_mod.design_busy():
+        raise ValueError("that edit is still running or queued: stop it first")
+    designer.remove_session(ROOT, data["id"], data["session"])
+    return {"ok": True}
+
+
+def design_merge(data: dict) -> dict:
+    """Character data["from"] moved into data["into"] (see designer.merge)."""
+    busy = {b.split("/")[0] for b in generate_mod.design_busy()}
+    if data["from"] in busy or data["into"] in busy:
+        raise ValueError("one of them has an edit running or queued: wait for it or stop it first")
+    _backfill_noise_origin(data["from"])  # its image keeps how it was drawn
+    return {"design": designer.merge(ROOT, data["into"], data["from"])}
 
 
 def prepare_comfy() -> None:
@@ -1114,8 +1499,51 @@ def upscale_view(d: Path) -> dict:
     return out
 
 
+def nobg_view(d: Path) -> dict:
+    """A run's background removals for History: {image name: {state, URL, source, ...}}."""
+    out = {}
+    for name, r in nobg_mod.load_results(d).items():
+        f = d / r["image"] if r.get("image") else None
+        ok = bool(f and f.exists())
+        out[name] = {"state": r.get("state"), "error": r.get("error"), "source": r.get("source"),
+                     "nobg_url": rel_url(f) if ok else None, "nobg_thumb": thumbs.url(ROOT, f) if ok else None,
+                     "seconds": r.get("seconds"), "finished": r.get("finished")}
+    return out
+
+
+def check_nobg_model() -> None:
+    """Fail at once, rather than in the queue, when ComfyUI is up but has no remover model."""
+    from .comfy import ComfyClient
+    cfg = load_config()
+    comfy = ComfyClient(cfg["comfy_url"])
+    try:
+        requests.get(f"{cfg['comfy_url']}/system_stats", timeout=2).raise_for_status()
+    except requests.RequestException:
+        return  # not running yet: the queued task starts it and checks then
+    nobg_mod.pick_model(cfg, nobg_mod.available_models(comfy))
+
+
 generate_mod.configure(root=ROOT, rel_url=rel_url, load_config=load_config, prepare=prepare_comfy,
-                       fix_target=fix_target)
+                       fix_target=fix_target, lora_cards=lora_cards)
+
+
+def open_browser_quietly(url: str) -> None:
+    """Open the page without the browser writing into this terminal. A browser started
+    from here inherits its output, so e.g. LibreWolf/Firefox from Flatpak printed
+    "Sandbox: CanCreateUserNamespace() clone() failure: EPERM" (harmless: Flatpak doesn't
+    allow nested user namespaces, so it uses Flatpak's own sandbox instead)."""
+    import shutil
+    import subprocess
+    import sys
+    opener = shutil.which("xdg-open") if sys.platform.startswith("linux") else None
+    if opener:
+        try:
+            subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+            return
+        except OSError:
+            pass
+    webbrowser.open(url)
 
 
 def serve(open_browser: bool = True) -> None:
@@ -1130,7 +1558,7 @@ def serve(open_browser: bool = True) -> None:
         # Warm ComfyUI up now (hidden) so it's ready when the queue starts.
         comfy_launcher(cfg).start_async(lambda m: print("[ComfyUI]", m))
     if open_browser:
-        threading.Timer(0.5, webbrowser.open, args=(url,)).start()
+        threading.Timer(0.5, open_browser_quietly, args=(url,)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

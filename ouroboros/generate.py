@@ -35,12 +35,15 @@ from pathlib import Path
 from PIL import Image
 
 from . import autofix as autofix_mod
+from . import nobg as nobg_mod
 from . import pose as pose_mod
 from . import upscale as upscale_mod
 from .comfy import Cancelled, ComfyClient
+from .favorites import run_dir as history_dir
 from .params import MODES, GenParams
 from .sizes import fit_to, output_size
-from .targets import Target, Targets, prompt_parts
+from .targets import (Target, Targets, cap_ip_weights, max_combined, prompt_parts, subject_cutout_default,
+                      subject_preset)
 from .workflow import Workflows
 
 JOBS: dict[str, dict] = {}       # task id -> public state (what the UI polls)
@@ -54,10 +57,12 @@ MAX_FINISHED = 12                # finished tasks kept for the Queue tab
 FINISHED = ("done", "error", "cancelled")
 
 
-def configure(*, root: Path, rel_url, load_config, prepare, fix_target) -> None:
+def configure(*, root: Path, rel_url, load_config, prepare, fix_target, lora_cards=None) -> None:
     """Set by the server: where things live, how to read settings, prepare() to make sure
-    ComfyUI is up (raises if not), and fix_target(run) -> what auto-fix needs for a run."""
-    _CTX.update(root=root, rel_url=rel_url, load_config=load_config, prepare=prepare, fix_target=fix_target)
+    ComfyUI is up (raises if not), fix_target(run) -> what auto-fix needs for a run, and
+    lora_cards() -> the classified LoRAs (for the Designer's style edits)."""
+    _CTX.update(root=root, rel_url=rel_url, load_config=load_config, prepare=prepare, fix_target=fix_target,
+                lora_cards=lora_cards)
 
 
 def _set(gen_id: str, **fields) -> None:
@@ -72,9 +77,10 @@ def active_runs() -> set[str]:
 
 
 def busy_targets() -> set[str]:
-    """History entries ("manual/<run>" or a loop run) with an auto-fix or upscale waiting or running."""
+    """History entries ("manual/<run>" or a loop run) with an auto-fix, upscale or background
+    removal waiting or running."""
     with _LOCK:
-        return {j["target"] for j in JOBS.values() if j.get("kind") in ("autofix", "upscale")
+        return {j["target"] for j in JOBS.values() if j.get("kind") in ("autofix", "upscale", "nobg")
                 and j.get("status") not in FINISHED and j.get("target")}
 
 
@@ -100,6 +106,17 @@ def queue_status() -> list[dict]:
         done = sorted((j for j in JOBS.values() if j.get("status") in FINISHED and not j.get("dismissed")),
                       key=lambda j: j.get("finished") or 0, reverse=True)[:MAX_FINISHED]
         return live + [_public(j) for j in done]
+
+
+def _warning(gen_id: str) -> str | None:
+    with _LOCK:
+        return (JOBS.get(gen_id) or {}).get("warning")
+
+
+def _warn(gen_id: str, text: str) -> None:
+    """Add a warning to a task's, keeping any earlier one (several can apply to one render)."""
+    old = _warning(gen_id)
+    _set(gen_id, warning=f"{old} · {text}" if old and text not in old else old or text)
 
 
 def _enqueue(kind: str, req: dict, **fields) -> str:
@@ -130,7 +147,8 @@ def start(req: dict) -> str:
                     estimate=req.get("estimate"), rerun=bool(req.get("_rerun")),
                     autofix=bool(req.get("autofix")), upscale=bool(req.get("upscale")),
                     batch=int(req.get("batch_size") or 1),
-                    has_reference=bool(req.get("style_b64")))
+                    has_reference=any(req.get(k) for k in ("style_b64", "subject_b64", "pose_b64",
+                                                           "style_library", "subject_library")))
 
 
 def _image_names(folder: Path, images: list[str]) -> list[str]:
@@ -162,6 +180,36 @@ def start_upscale(run: str, images: list[str]) -> str:
     return _enqueue("upscale", {"run": run, "images": names},
                     label=f"{len(names)} image{'s' if len(names) > 1 else ''} of {run.removeprefix('manual/')}",
                     target=run, sources=names)
+
+
+def start_nobg(run: str, images: list[str]) -> str:
+    """Queue background removal for images of a History entry (each image's latest
+    version: upscaled, else auto-fixed, else the original; see nobg.latest_version).
+    Unlike auto-fix and upscale it needs no recorded settings, so a failed run's image works."""
+    names = _image_names(history_dir(_CTX["root"], run), images)
+    if not names:
+        raise FileNotFoundError("no such image in that run")
+    return _enqueue("nobg", {"run": run, "images": names},
+                    label=f"background of {len(names)} image{'s' if len(names) > 1 else ''} of "
+                          f"{run.removeprefix('manual/')}",
+                    target=run, sources=names)
+
+
+def start_design(design_id: str, session_id: str, rounds: int | None = None, label: str = "") -> str:
+    """Queue rounds of a Designer edit (rounds=None: until it passes or reaches its maximum;
+    1 for "one more round"). See designer.run_session."""
+    from . import designer
+    designer.load_session(_CTX["root"], design_id, session_id)  # fails now for a bad id
+    return _enqueue("design", {"design": design_id, "session": session_id, "rounds": rounds},
+                    label=label or f"design edit {session_id}", target=f"design/{design_id}/{session_id}",
+                    design=design_id, session=session_id)
+
+
+def design_busy() -> set[str]:
+    """"<design>/<session>" of Designer edits waiting or running."""
+    with _LOCK:
+        return {f"{j['design']}/{j['session']}" for j in JOBS.values()
+                if j.get("kind") == "design" and j.get("status") not in FINISHED}
 
 
 def remove(gen_id: str) -> dict:
@@ -207,6 +255,10 @@ def _worker_loop() -> None:
                 _run_autofix(gen_id, req, stop)
             elif JOBS[gen_id]["kind"] == "upscale":
                 _run_upscale(gen_id, req, stop)
+            elif JOBS[gen_id]["kind"] == "nobg":
+                _run_nobg(gen_id, req, stop)
+            elif JOBS[gen_id]["kind"] == "design":
+                _run_design(gen_id, req, stop)
             else:
                 _run(gen_id, _CTX["load_config"](), req, _CTX["root"], _CTX["rel_url"], stop)
         except Cancelled:
@@ -245,6 +297,17 @@ def rerun_request(root: Path, run: str) -> dict:
                _rerun=run)
     if rec.get("size"):
         req["size"] = rec["size"]
+    # The IP-Adapters as they rendered (each one's preset and weight, after any scaling) and
+    # whether the character image's background was removed, so a rerun matches its entry
+    # even when the defaults (character preset, weight cap, cut-out) have changed since.
+    if isinstance(rec.get("ipadapter"), list):
+        for a in rec["ipadapter"]:
+            if a.get("role") == "subject":
+                req.update(subject_ip_weight=a.get("weight"), ip_preset=a.get("preset"))
+            elif a.get("role") == "style":
+                req.update(style_ip_weight=a.get("weight"), style_ip_preset=a.get("preset"))
+        req["_ip_as_recorded"] = True
+    req["subject_cutout"] = bool(rec.get("subject_cutout"))
     for field, name in (("style_b64", rec.get("reference") or "reference.png"),
                         ("subject_b64", rec.get("subject_reference")),
                         ("pose_b64", rec.get("pose_reference"))):
@@ -269,6 +332,16 @@ def _write_record(run_dir: Path, record: dict) -> None:
         (run_dir / "run.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
     except OSError:
         pass
+
+
+def batch_pick(req: dict) -> tuple[int, int] | None:
+    """(image number, of how many) from a request's batch_pick {"index": 8, "of": 8}, or None."""
+    bp = req.get("batch_pick") or {}
+    try:
+        index, of = int(bp.get("index")), int(bp.get("of"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return (index, of) if 1 <= index <= of <= 64 else None
 
 
 def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
@@ -303,9 +376,6 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
         tg = Targets(style=Target(style, (req.get("style_text") or "").strip()),
                      subject=Target(subject, (req.get("subject_text") or "").strip()),
                      pose=Target(pose_ref, (req.get("pose_text") or "").strip()))
-        split = (subject is not None and style is not None) or any(t.text for _, t in tg.items())
-        if split:
-            record["targets"] = tg.to_dict()
         # A saved pose from the library stands in for a pose reference image.
         saved_pose = (req.get("pose_library") or "").strip()
         if saved_pose == "auto":  # the LLM picks one that fits, or none
@@ -320,6 +390,14 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
                 pose_note = pose_mod.PoseLibrary(root / "poses").get(saved_pose).get("description", "")
             except FileNotFoundError:
                 pass
+        if pose_note.strip() and tg.pose.empty:
+            # The imposed pose is the prompt's POSE target, so its words come from the saved pose
+            # and not from the character image, whose own pose the prompt writer otherwise copies
+            # ("arms at sides" under a crossed-arms skeleton, 2026-10-04).
+            tg = Targets(style=tg.style, subject=tg.subject, pose=Target(None, pose_note.strip(), saved_pose))
+        split = (subject is not None and style is not None) or any(t.text for _, t in tg.items())
+        if split:
+            record["targets"] = tg.to_dict()
 
         positive = (req.get("positive") or "").strip()
         negative = (req.get("negative") or "").strip()
@@ -333,7 +411,7 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
             from .lora_picker import prompt_notes
             from .runner import lora_library
             picks = tuple((l["name"], float(l.get("strength", 0.8))) for l in req.get("loras") or [])
-            written = write_prompt(make_backend(cfg["judge"]), req.get("description", ""), "", negative,
+            written = write_prompt(make_backend(cfg["judge"], "prompt"), req.get("description", ""), "", negative,
                                    flows.default("positive"), flows.default("negative"),
                                    reference=None if split else main,
                                    max_side=cfg["judge"].get("image_max_side", 512),
@@ -393,7 +471,7 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
                            "strength": float(req.get("pose_strength") or cn.get("pose_strength", 0.6)),
                            "start": 0.0, "end": float(req.get("pose_end") or cn.get("pose_end", 0.8))}
             else:
-                _set(gen_id, warning="no person found in the pose reference; pose control skipped")
+                _warn(gen_id, "no person found in the pose reference; pose control skipped")
 
         ipa = None
         ip_cfg = cfg.get("ipadapter", {})
@@ -407,11 +485,29 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
                     ("style", style if req.get("style_ip") else None,
                      req.get("style_ip_weight") or ip_cfg.get("style_weight", 0.5),
                      ip_cfg.get("style_weight_type", "style transfer"))):
-                if img is not None and float(weight) > 0:
-                    ipa.append({"image": comfy.upload_image(img, f"manual/{run_dir.name}"), "role": role,
-                                "preset": req.get("ip_preset") or ip_cfg.get("preset", "PLUS (high strength)"),
-                                "weight": float(weight), "weight_type": wtype, "start": 0.0,
-                                "end": float(req.get("ip_end") or ip_cfg.get("end", 1.0))})
+                if img is None or float(weight) <= 0:
+                    continue
+                if role == "subject" and req.get("subject_cutout", subject_cutout_default(ip_cfg)):
+                    _set(gen_id, state="removing the character image's background")
+                    try:
+                        img = nobg_mod.cutout(img, comfy=comfy, cfg=cfg, cache_dir=root / "cache" / "cutouts",
+                                              upload=lambda p: comfy.upload_image(p, f"manual/{run_dir.name}"))
+                        record["subject_cutout"] = True
+                    except Exception as e:  # optional: the IP-Adapter takes the image as it is
+                        _warn(gen_id, f"couldn't remove the character image's background ({str(e)[:160]}); "
+                                      "used it as it is")
+                if role == "subject":  # the encoder sees a centre square: pad, or the head is cut off
+                    img = nobg_mod.square_for_ip(img, root / "cache" / "cutouts")
+                # The Home form's preset is the character's; the style keeps its own.
+                preset = (req.get("ip_preset") or subject_preset(ip_cfg)) if role == "subject" \
+                    else (req.get("style_ip_preset") or ip_cfg.get("preset", "PLUS (high strength)"))
+                ipa.append({"image": comfy.upload_image(img, f"manual/{run_dir.name}"), "role": role,
+                            "preset": preset, "weight": float(weight), "weight_type": wtype, "start": 0.0,
+                            "end": float(req.get("ip_end") or ip_cfg.get("end", 1.0))})
+            scaled = None if req.get("_ip_as_recorded") else cap_ip_weights(ipa, max_combined(ip_cfg))
+            if scaled:
+                record["ip_scaled"] = scaled
+                _warn(gen_id, scaled)
             ipa = ipa or None
         elif style is not None and req.get("ipadapter"):  # a request from before the separate targets
             ip = cfg.get("ipadapter", {})
@@ -422,9 +518,12 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
                    "weight_type": req.get("ip_weight_type") or ip.get("weight_type", "linear"),
                    "start": 0.0, "end": float(req.get("ip_end") or ip.get("end", 1.0))}
 
-        graph = flows.build(p, image_name, batch_size=int(req.get("batch_size") or 1),
+        # One image of an earlier batch remade alone ("Remake just this one"): image 8 of a
+        # batch of 8 gets the noise it had there, so a small prompt change keeps the character.
+        pick = batch_pick(req)
+        graph = flows.build(p, image_name, batch_size=pick[1] if pick else int(req.get("batch_size") or 1),
                             checkpoint=req.get("checkpoint") or None, size=size,
-                            control=control, ipadapter=ipa)
+                            control=control, ipadapter=ipa, pick=pick[0] - 1 if pick else None)
         record.update(positive=p.positive, negative=p.negative, params=_describe(p, size),
                       loras=[list(l) for l in p.loras], size=list(size),
                       reference="reference.png" if style else None,
@@ -440,7 +539,7 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
         blobs = comfy.fetch_images(history[prompt_id], flows.output_node)
         images = []
         for i, blob in enumerate(blobs):
-            out = run_dir / f"image_{i + 1:02d}.png"
+            out = run_dir / f"image_{(pick[0] if pick else i + 1):02d}.png"
             out.write_bytes(blob)
             images.append(rel_url(out))
         render_s = time.time() - t_render
@@ -453,15 +552,15 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
                                     p, p.positive, req.get("checkpoint") or None, stop)
             errors = [f["error"] for f in fixed if f.get("error")]
             if errors:
-                _set(gen_id, warning=f"auto-fix failed for {len(errors)} image(s): {errors[0]}")
+                _warn(gen_id, f"auto-fix failed for {len(errors)} image(s): {errors[0]}")
         if req.get("upscale") and images and not req.get("_rerun"):
             ups = _upscale_images(gen_id, cfg, comfy, flows, run_dir, [Path(u).name for u in images], p, p.positive,
                                   req.get("checkpoint") or None, stop, rel_url)
             errors = [u["error"] for u in ups if u.get("error")]
             if errors:
-                _set(gen_id, warning=f"upscaling failed for {len(errors)} image(s): {errors[0]}")
+                _warn(gen_id, f"upscaling failed for {len(errors)} image(s): {errors[0]}")
         record.update(status="done",
-                      finished=time.strftime("%Y-%m-%d %H:%M:%S"),
+                      finished=time.strftime("%Y-%m-%d %H:%M:%S"), warning=_warning(gen_id),
                       timing={"total_s": round(time.time() - t0, 1), "render_s": round(render_s, 1),
                               "llm_s": llm_s, **_work(p, size, len(images), ipa, control)})
         _write_record(run_dir, record)
@@ -480,7 +579,7 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
         raise
     except Exception as e:
         _set(gen_id, status="error", state="error", error=f"{type(e).__name__}: {e}", finished=time.time())
-        record.update(status="error", error=f"{type(e).__name__}: {e}",
+        record.update(status="error", error=f"{type(e).__name__}: {e}", warning=_warning(gen_id),
                       finished=time.strftime("%Y-%m-%d %H:%M:%S"))
         _write_record(run_dir, record)
         try:
@@ -581,6 +680,66 @@ def _run_upscale(gen_id: str, req: dict, stop) -> None:
              warning=f"{len(errors)} image(s) failed: {errors[0]}" if errors else None)
 
 
+def _run_nobg(gen_id: str, req: dict, stop) -> None:
+    """A queued background removal of History images (see start_nobg)."""
+    cfg = _CTX["load_config"]()
+    comfy = ComfyClient(cfg["comfy_url"])
+    model = nobg_mod.pick_model(cfg, nobg_mod.available_models(comfy))
+    run_dir, names = history_dir(_CTX["root"], req["run"]), req["images"]
+    _set(gen_id, images=[_CTX["rel_url"](run_dir / n) for n in names], history=req["run"])
+    upload = lambda path: comfy.upload_image(path, f"nobg/{run_dir.name}")  # noqa: E731
+    out, errors = [], []
+    for n, name in enumerate(names, 1):
+        _set(gen_id, state=f"removing the background of image {n} of {len(names)}" if len(names) > 1
+             else "removing the background")
+        try:
+            res = nobg_mod.run_and_record(name, run_dir=run_dir, comfy=comfy, model=model, upload=upload,
+                                          should_stop=stop)
+        except Cancelled:
+            raise
+        except Exception as e:  # one image failing doesn't stop the others
+            errors.append(f"{type(e).__name__}: {str(e)[:200]}")
+            continue
+        out.append(_CTX["rel_url"](res["final"]))
+        _set(gen_id, nobg=list(out))
+    if errors and not out:
+        _set(gen_id, status="error", state="error", error=errors[0], finished=time.time())
+    else:
+        _set(gen_id, status="done", state="done", nobg=out, finished=time.time(),
+             warning=f"{len(errors)} image(s) failed: {errors[0]}" if errors else None)
+
+
+def _run_design(gen_id: str, req: dict, stop) -> None:
+    """Queued rounds of a Designer edit (see start_design)."""
+    from . import designer
+    from .backends import make_backend
+    cfg, root = _CTX["load_config"](), _CTX["root"]
+    comfy = ComfyClient(cfg["comfy_url"])
+    sub = f"design/{req['session']}"
+    if designer.load_session(root, req["design"], req["session"]).get("kind") == "manual":
+        sess = designer.run_manual(root, req["design"], req["session"], cfg=cfg, comfy=comfy,
+                                   flows=Workflows(root / "workflows"),
+                                   upload=lambda path: comfy.upload_image(path, sub), should_stop=stop,
+                                   stage=lambda text: _set(gen_id, state=text))
+        last = sess["rounds"][-1]["candidates"] if sess["rounds"] else []
+        _set(gen_id, status="done", state="rendered", design_status=sess["status"], finished=time.time(),
+             images=[_CTX["rel_url"](designer.session_dir(root, req["design"], req["session"]) / c["image"])
+                     for c in last])
+        return
+    sess = designer.run_session(root, req["design"], req["session"], cfg=cfg, comfy=comfy,
+                                flows=Workflows(root / "workflows"), backend=make_backend(cfg["judge"]),
+                                upload=lambda path: comfy.upload_image(path, sub), rounds=req.get("rounds"),
+                                should_stop=stop, stage=lambda text: _set(gen_id, state=text),
+                                lora_cards=_CTX.get("lora_cards"),
+                                confirm_backend=designer.confirm_backend_for(cfg["judge"]),
+                                prompt_backend=make_backend(cfg["judge"], "prompt"))
+    best = sess.get("best") or {}
+    _set(gen_id, status="done", state=f"{sess['status']}: best {best.get('score', '-')}",
+         design_status=sess["status"], finished=time.time(),
+         images=[_CTX["rel_url"](designer.session_dir(root, req["design"], req["session"]) / best["image"])]
+         if best.get("image") else [])
+
+
 def manual_fix_target(root: Path, run: str) -> dict:
     """What auto-fix needs for a Home generation in History: its folder, the settings it
     was made with, and the prompt as rendered."""
@@ -620,7 +779,7 @@ def _use_saved_targets(gen_id: str, cfg: dict, req: dict, root: Path, record: di
         except Cancelled:
             raise
         except Exception as e:
-            _set(gen_id, warning=f"choosing a {reflib.ROLE_KIND[role]} failed ({str(e)[:160]})")
+            _warn(gen_id, f"choosing a {reflib.ROLE_KIND[role]} failed ({str(e)[:160]})")
             continue
         if got and got.get("pick"):
             record[f"{role}_pick"] = {"pick": got["pick"]["pick"], "reason": got["pick"]["reason"]}
@@ -643,7 +802,7 @@ def _pick_pose(gen_id: str, cfg: dict, req: dict, style: Path | None, root: Path
     from . import pose_picker
     from .backends import make_backend
     if not pose_mod.available():
-        _set(gen_id, warning="AI pose picking needs rtmlib (pip install rtmlib); no pose used")
+        _warn(gen_id, "AI pose picking needs rtmlib (pip install rtmlib); no pose used")
         return ""
     try:
         from_image = not (req.get("description") or "").strip() and not (req.get("positive") or "").strip()
@@ -654,7 +813,7 @@ def _pick_pose(gen_id: str, cfg: dict, req: dict, style: Path | None, root: Path
     except Cancelled:
         raise
     except Exception as e:
-        _set(gen_id, warning=f"choosing a pose failed ({str(e)[:160]}); no pose used")
+        _warn(gen_id, f"choosing a pose failed ({str(e)[:160]}); no pose used")
         return ""
     record["pose_pick"] = {"pose": pick["pose"], "reason": pick["reason"], "considered": pick["considered"]}
     record["request"].update(pose_library=pick["pose"] or "", pose_control=bool(pick["pose"]) or bool(req.get("pose_control")))
@@ -694,7 +853,7 @@ def _ai_settings(gen_id: str, cfg: dict, req: dict, comfy, flows: Workflows, p: 
     except Cancelled:
         raise
     except Exception as e:
-        _set(gen_id, warning=f"choosing sampler settings failed ({str(e)[:160]}); used the form's settings")
+        _warn(gen_id, f"choosing sampler settings failed ({str(e)[:160]}); used the form's settings")
         return p
     picked = {k: chosen[k] for k in advisor.FIELDS}
     record["ai_settings"] = {**picked, "notes": chosen["notes"], "changed": chosen["changed"], "form": current,

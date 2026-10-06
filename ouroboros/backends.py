@@ -14,12 +14,14 @@ import io
 import json
 import re
 import time
+import math
 from pathlib import Path
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from .sizes import to_rgb
+from .usage import charge
 
 
 def encode_jpeg(image: Path | Image.Image, max_side: int) -> str:
@@ -153,7 +155,12 @@ class OpenAIBackend:
             text={"format": {"type": "json_schema", "name": name, "schema": schema, "strict": True}},
             **kwargs,
         )
-        return json.loads(resp.output_text), self._cost(resp.usage), int(resp.usage.input_tokens or 0)
+        cost = self._cost(resp.usage)
+        charge(cost)
+        try:
+            return json.loads(resp.output_text), cost, int(resp.usage.input_tokens or 0)
+        except (ValueError, TypeError) as e:
+            raise CompletionError(str(e), cost, int(resp.usage.input_tokens or 0)) from e
 
     def _cost(self, usage) -> float:
         p = self.cfg["price_per_mtok"]
@@ -164,6 +171,43 @@ class OpenAIBackend:
 
 _IMAGE_LIMITS: dict[str, int] = {}  # model -> images per request, from its "Too many images" error
 MAX_OUTPUT_TOKENS = 32768  # ceiling when a truncated answer is retried with more room
+
+
+class CompletionError(RuntimeError):
+    """A failed completion can still have billed attempts."""
+    def __init__(self, message, cost_usd=0.0, prompt_tokens=0):
+        super().__init__(message)
+        self.cost_usd, self.prompt_tokens = cost_usd, prompt_tokens
+
+
+def labelled_sheet(parts: list[dict], cell_side: int) -> tuple[Image.Image, list[str]]:
+    images = [p for p in parts if "image" in p]
+    cols = math.ceil(math.sqrt(len(images)))
+    rows = math.ceil(len(images) / cols)
+    side = max(128, cell_side)
+    sheet = Image.new("RGB", (cols * side, rows * (side + 32)), "#202020")
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default(size=18)
+    labels, previous = [], ""
+    i = 0
+    for part in parts:
+        if "image" not in part:
+            previous = part.get("text", "")
+            continue
+        label = f"Image {i + 1}"
+        labels.append(f"{label}: {previous[-160:]}" if previous else label)
+        source = part["image"]
+        if isinstance(source, Path):
+            with Image.open(source) as im:
+                img = to_rgb(im).copy()
+        else:
+            img = to_rgb(source).copy()
+        img.thumbnail((side, side))
+        x, y = (i % cols) * side, (i // cols) * (side + 32)
+        sheet.paste(img, (x + (side - img.width) // 2, y + 32 + (side - img.height) // 2))
+        draw.text((x + 8, y + 5), label, fill="white", font=font)
+        i += 1
+    return sheet, labels
 
 
 def _decode_json(text: str):
@@ -212,17 +256,25 @@ class DeepInfraBackend:
         return int(self.cfg.get("context_tokens") or 163840)
 
     def _content(self, parts: list[dict], max_side: int) -> list[dict]:
-        """The user message. Past the model's image limit (learnt from its error, see
-        complete), later images become a note; the reference always comes first."""
+        """Preserve every image, using numbered panels when the request exceeds a limit."""
         content, n = [], 0
-        limit = _IMAGE_LIMITS.get(self.cfg["model"])
+        limit = self.cfg.get("max_images") or _IMAGE_LIMITS.get(self.cfg["model"])
+        if limit and sum("image" in p for p in parts) > limit:
+            sheet, labels = labelled_sheet(parts, max_side)
+            content.append({"type": "text", "text": "All attached images are in one contact sheet. "
+                            "Image numbers identify panels, in original order.\n" + "\n".join(labels)})
+            content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," +
+                            encode_jpeg(sheet, max(sheet.size))}})
+            for part in parts:
+                if "image" in part:
+                    n += 1
+                    content.append({"type": "text", "text": f"(see Image {n} in the contact sheet)"})
+                else:
+                    content.append({"type": "text", "text": part["text"]})
+            return content
         for part in parts:
             if "image" in part:
                 n += 1
-                if limit is not None and n > limit:
-                    content.append({"type": "text", "text": "(image left out: this model takes at most "
-                                                            f"{limit} images a request)"})
-                    continue
                 url = "data:image/jpeg;base64," + encode_jpeg(part["image"], part.get("max_side", max_side))
                 content.append({"type": "image_url", "image_url": {"url": url}})
             else:
@@ -253,6 +305,8 @@ class DeepInfraBackend:
 
         attempts = 1 + int(self.cfg.get("retries", 2))
         problem = ""
+        total_cost, total_prompt = 0.0, 0
+        self.last_stats = {}
         schema_500s = 0
         attempt = -1
         while (attempt := attempt + 1) < attempts:
@@ -280,7 +334,10 @@ class DeepInfraBackend:
                 continue
             if r.status_code == 400 and (m := re.search(r"Too many images in request: \d+ > (\d+)", r.text)):
                 # MiMo-V2.6-Flash takes at most 4 images, and LoRA picking sends 6.
-                _IMAGE_LIMITS[self.cfg["model"]] = int(m.group(1))
+                limit = int(m.group(1))
+                if limit < 1 or _IMAGE_LIMITS.get(self.cfg["model"]) == limit:
+                    raise CompletionError("Model cannot accept the contact sheet", total_cost, total_prompt)
+                _IMAGE_LIMITS[self.cfg["model"]] = limit
                 body["messages"][1]["content"] = self._content(parts, max_side)
                 attempts += 1
                 continue
@@ -300,16 +357,36 @@ class DeepInfraBackend:
                     time.sleep(5)
                 continue
             if r.status_code != 200:
-                raise RuntimeError(f"DeepInfra error {r.status_code}: {r.text[:1000]}")
+                raise CompletionError(f"DeepInfra error {r.status_code}: {r.text[:1000]}", total_cost, total_prompt)
             data = r.json()
             usage = data.get("usage") or {}
+            billed = self._cost(usage)
+            charge(billed)
+            total_cost += billed
+            total_prompt += int(usage.get("prompt_tokens") or 0)
             ns = int((time.monotonic() - t0) * 1e9)
             # Same shape as Ollama's timings, so judge_eval can report tokens per second.
             self.last_stats = {"total_duration": ns, "load_duration": 0,
                                "prompt_eval_count": usage.get("prompt_tokens"), "prompt_eval_duration": 0,
-                               "eval_count": usage.get("completion_tokens"), "eval_duration": ns}
+                               "eval_count": usage.get("completion_tokens"), "eval_duration": ns,
+                               "attempts": attempt + 1, "cost_usd": total_cost,
+                               "billed_prompt_tokens": total_prompt}
             choice = (data.get("choices") or [{}])[0]
             message = choice.get("message") or {}
+            if choice.get("finish_reason") == "length" and not (
+                    (message.get("reasoning_content") or "").strip()
+                    or int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)):
+                # No reasoning: the answer itself ran on, a model repeating itself (Qwen3-VL at
+                # temperature 0 repeats prompt tags). More room only makes it loop longer: the
+                # retries doubled max_tokens to 32768 and each one hit the 600 s read timeout,
+                # a 40-minute "Write prompts" (2026-10-05). Retry nudged off the loop instead.
+                tail = (message.get("content") or "")[-120:]
+                problem = f"kept repeating itself until max_tokens ({body.get('max_tokens', '?')}): ...{tail!r}"
+                if "frequency_penalty" not in body:
+                    body["frequency_penalty"] = 0.5
+                    body["temperature"] = max(float(body.get("temperature") or 0), 0.4)
+                    attempts += 1  # the nudged retry shouldn't count
+                continue
             if choice.get("finish_reason") == "length":
                 # Reasoning counts against max_tokens, and an open-ended task (writing a
                 # prompt from a reference image) can spend the lot on thinking. Retrying
@@ -318,18 +395,20 @@ class DeepInfraBackend:
                 room = int(body.get("max_tokens") or 8192)
                 problem = (f"ran out of tokens ({room}); the model is probably looping while reasoning. "
                            "Raise judge.deepinfra.max_tokens or pick another model.")
-                if room < MAX_OUTPUT_TOKENS:
-                    body["max_tokens"] = min(MAX_OUTPUT_TOKENS, room * 2)
+                ceiling = min(MAX_OUTPUT_TOKENS, int(self.cfg.get("max_output_tokens") or MAX_OUTPUT_TOKENS))
+                if room < ceiling:
+                    body["max_tokens"] = min(ceiling, room * 2)
                     attempts += 1  # the retry that just gained headroom shouldn't count
                 continue
             # Reasoning models put the answer in content and their thinking in
             # reasoning_content; a few return only the latter.
             text = (message.get("content") or "").strip() or (message.get("reasoning_content") or "")
             try:
-                return _decode_json(text), self._cost(usage), int(usage.get("prompt_tokens") or 0)
+                # Callers use this token count as the size of one context, not billed usage.
+                return _decode_json(text), total_cost, int(usage.get("prompt_tokens") or 0)
             except (json.JSONDecodeError, ValueError):
                 problem = f"returned invalid JSON: {text[:500]!r}"
-        raise RuntimeError(f"DeepInfra {problem} ({attempts} attempts)")
+        raise CompletionError(f"DeepInfra {problem} ({attempts} attempts)", total_cost, total_prompt)
 
     def _cost(self, usage: dict) -> float:
         if usage.get("estimated_cost") is not None:
@@ -358,7 +437,9 @@ def deepinfra_models(url: str = "", vision_only: bool = True) -> list[str]:
 BACKENDS = {"ollama": OllamaBackend, "openai": OpenAIBackend, "deepinfra": DeepInfraBackend}
 
 
-def make_backend(judge_cfg: dict):
+def make_backend(judge_cfg: dict, role: str = "judge"):
+    from .model_profiles import role_config
+    judge_cfg = role_config(judge_cfg, role)
     name = judge_cfg.get("backend", "ollama")
     if name not in BACKENDS:
         raise ValueError(f"Unknown judge backend '{name}' (choose from {', '.join(BACKENDS)})")

@@ -93,3 +93,25 @@ def test_once_listed_ordinary_tags_and_plain_file_names_are_kept():
 def test_made_up_token(word, token):
     from ouroboros.loras import made_up_token
     assert made_up_token(word) is token
+
+
+def test_combo_options_reads_both_object_info_formats():
+    from ouroboros.comfy import combo_options
+    assert combo_options([["euler", "dpmpp_2m"], {"tooltip": "x"}]) == ["euler", "dpmpp_2m"]
+    assert combo_options(["COMBO", {"multiselect": False, "options": ["4x-AnimeSharp.safetensors"]}]) \
+        == ["4x-AnimeSharp.safetensors"]
+    assert combo_options(["INT", {"default": 1}]) == []
+
+
+
+def test_one_image_of_a_batch_is_drawn_alone_with_its_own_slice_of_the_noise(flows):
+    g = flows.build(GenParams(positive="1girl", seed=5), "x.png", batch_size=8, pick=7)
+    ks = g[flows.spec["roles"]["seed"][0]]["inputs"]
+    assert ks["latent_image"] == ["pick", 0]
+    assert g["pick"]["class_type"] == "LatentFromBatch" and g["pick"]["inputs"]["batch_index"] == 7
+    assert g["pick"]["inputs"]["length"] == 1
+    if "batch_size" in flows.spec["roles"]:  # the whole batch's noise is drawn, then image 8 picked
+        node, key = flows.spec["roles"]["batch_size"]
+        assert g[node]["inputs"][key] == 8
+    plain = flows.build(GenParams(positive="1girl"), "x.png", batch_size=2)
+    assert "pick" not in plain

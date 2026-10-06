@@ -1,5 +1,6 @@
 """Small JPEG copies of run images (for History) and of the LoRA classifier's example
-renders (for the LoRA detail pane).
+renders (for the LoRA detail pane). An image with transparency (a background removal's
+<stem>_nobg.png) gets a PNG thumbnail instead, so it stays transparent.
 
 A History card shows up to four full-size PNGs (1-2 MB each), so a page of runs used to
 pull tens of megabytes. Each image is shrunk once, the first time it is asked for, and
@@ -18,6 +19,7 @@ from PIL import Image
 
 from .sizes import to_rgb
 
+FORMAT = 2  # in the URL: browsers cached transparent images' old white-backed JPEG thumbnails
 MAX_SIDE = 384  # History cards are ~190 px wide; twice that stays sharp on hi-dpi screens
 QUALITY = 82
 EXAMPLES = "lora_examples"
@@ -26,26 +28,37 @@ _locks_guard = threading.Lock()
 
 
 def url(root: Path, image: Path) -> str | None:
-    """/thumbs/... URL for an image under runs/, versioned by the image's mtime so the
+    """/thumbs/... URL for an image under SOURCE_DIRS, versioned by the image's mtime so the
     browser can cache it for good and still sees a rewritten best.png."""
     try:
         rel = image.resolve().relative_to(root.resolve()).as_posix()
-        return f"/thumbs/{rel}?v={int(image.stat().st_mtime)}"
+        return f"/thumbs/{rel}?v={int(image.stat().st_mtime)}-{FORMAT}"
     except (OSError, ValueError):
         return None
 
 
+SOURCE_DIRS = ("runs", "styles", "characters", "poses", "designs")  # what /thumbs/ will shrink
+
+
 def get(root: Path, rel: str) -> Path | None:
-    """The cached thumbnail for runs/<...> (made now if missing or stale), or None."""
+    """The cached thumbnail for an image under one of SOURCE_DIRS (made now if missing or
+    stale), or None. The style and character libraries list their images by thumbnail."""
     source = (root / rel).resolve()
-    try:
-        source.relative_to((root / "runs").resolve())
-    except ValueError:
+    if not any(source.is_relative_to((root / d).resolve()) for d in SOURCE_DIRS):
         return None
     if not source.is_file():
         return None
     # Named after the resolved path, not `rel`: "runs/../../x.png" must not write outside the cache.
-    return _make(source, cache_dir(root) / source.relative_to(root.resolve()).with_suffix(".jpg"))
+    suffix = ".png" if _has_alpha(source) else ".jpg"
+    return _make(source, cache_dir(root) / source.relative_to(root.resolve()).with_suffix(suffix))
+
+
+def _has_alpha(source: Path) -> bool:
+    try:
+        with Image.open(source) as img:  # reads the header only
+            return img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
+    except OSError:
+        return False
 
 
 def lora_example(root: Path, source: Path, lora_id: str) -> Path | None:
@@ -63,10 +76,13 @@ def _make(source: Path, out: Path) -> Path:
             return out
         out.parent.mkdir(parents=True, exist_ok=True)
         with Image.open(source) as img:
-            img = to_rgb(img)
+            img = img.convert("RGBA") if out.suffix == ".png" else to_rgb(img)
             img.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
             tmp = out.with_name(out.name + ".tmp")
-            img.save(tmp, "JPEG", quality=QUALITY, optimize=True)
+            if out.suffix == ".png":
+                img.save(tmp, "PNG", optimize=True)
+            else:
+                img.save(tmp, "JPEG", quality=QUALITY, optimize=True)
         os.replace(tmp, out)  # never serve a half-written file
     return out
 
@@ -75,7 +91,7 @@ def prune(root: Path) -> int:
     """Delete thumbnails whose image is gone (e.g. after emptying the recycle bin)."""
     base = cache_dir(root)
     removed = 0
-    for thumb in base.rglob("*.jpg") if base.is_dir() else []:
+    for thumb in [*base.rglob("*.jpg"), *base.rglob("*.png")] if base.is_dir() else []:
         rel = thumb.relative_to(base)
         if rel.parts[0] == EXAMPLES:
             continue  # their sources are outside the project; the catalog decides those

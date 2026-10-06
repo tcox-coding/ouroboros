@@ -19,6 +19,7 @@ from . import masks, scoring
 from . import pose as posemod
 from . import pose_picker
 from . import autofix as autofix_mod
+from . import nobg as nobg_mod
 from . import settings_advisor as advisor
 from . import upscale as upscale_mod
 from .handfix import refine_hands
@@ -29,9 +30,9 @@ from .lora_picker import pick_loras, prompt_notes
 from .loras import LoraLibrary, checkpoint_base, compatible, with_triggers
 from .params import (DEFAULT_DENOISE, MODES, GenParams, allowed_modes, apply_edit, enforce_reference_rules,
                      lora_stem, norm_tag, reseed_duplicates, split_tags, variants)
-from .prompter import write_prompt
+from .prompter import names_style, write_prompt
 from .sizes import check_size, fit_to, output_size
-from .targets import prompt_parts
+from .targets import Target, cap_ip_weights, max_combined, prompt_parts, subject_cutout_default, subject_preset
 from .workflow import Workflows
 
 Report = Callable[[dict], None]
@@ -313,6 +314,20 @@ def resolve_loras(loras: tuple, index: dict, installed: list[str] | None, log, w
     return tuple(out)
 
 
+def _flag(value, default: bool) -> bool:
+    """A job setting that is a bool, or a string from a settings.txt ("false", "0", "off")."""
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() not in ("false", "0", "off", "no")
+
+
+def _num(value, default) -> float:
+    try:
+        return float(value) if value not in (None, "") else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def initial_params(job: Job, defaults: dict) -> GenParams:
     s = {**defaults, **job.settings}
     mode = s.get("mode", "txt2img")
@@ -329,6 +344,35 @@ def initial_params(job: Job, defaults: dict) -> GenParams:
     )
 
 
+def lora_context(job, tg, style_ref, poses_dir: Path, lc: dict, cfg: dict) -> list[tuple]:
+    """The job's subject and pose images for the LoRA picker, each (role, image, tags), beside
+    the style reference (`style_ref`, not repeated). The pose: the job's pose image, else the
+    saved pose it names; "auto" hasn't been picked yet and "reference" is the main image."""
+    def same(a, b) -> bool:
+        try:
+            return a is not None and b is not None and Path(a).resolve() == Path(b).resolve()
+        except (TypeError, OSError):
+            return a is b
+    out = []
+    if tg.subject.image is not None and not same(tg.subject.image, style_ref):
+        out.append(("subject", tg.subject.image, tg.subject.text))
+    pose_img, pose_tags = tg.pose.image, tg.pose.text
+    setting = str(job.settings.get("pose") or lc.get("pose") or cfg.get("defaults", {}).get("pose") or "off")
+    if pose_img is None and setting not in ("off", "auto", "reference"):
+        try:
+            lib = posemod.PoseLibrary(poses_dir)
+            pose_img, pose_tags = lib.source(setting), lib.get(setting).get("description", "")
+        except (OSError, ValueError):
+            pose_img = None
+    if pose_img is not None and not same(pose_img, style_ref) and not same(pose_img, tg.subject.image):
+        out.append(("pose", pose_img, pose_tags))
+    return out
+
+
+from . import usage
+
+
+@usage.scoped
 def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Judge,
             samplers: list[str], schedulers: list[str], runs_dir: Path,
             report: Report = print_report, should_stop: Callable[[], bool] = lambda: False,
@@ -354,6 +398,12 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     report({"type": "job_start", "job": job.name, "run_dir": out_dir, "reference": reference,
             "threshold": threshold, "max_rounds": max_rounds, "context_window": judge.context_window})
     cost = 0.0
+    prompt_backend = getattr(judge, "prompt_backend", judge.backend)
+    from .model_profiles import confirmation_threshold
+    confirm_threshold = confirmation_threshold(cfg["judge"], threshold)
+    bk = cfg["judge"]["backend"]
+    judge_model = cfg["judge"].get(bk, {}).get("model", "")
+    confirm_model = cfg["judge"].get("confirm_model") or judge_model
 
     # 0. Saved style / character "AI picks" (reflib): the chosen item becomes that target.
     for role in ("style", "subject"):
@@ -362,7 +412,6 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         report({"type": "stage", "round": 0, "phase": "explore", "stage": f"choosing a saved {role}"})
         try:
             from . import reflib
-            from .targets import Target
             got = reflib.resolve(runs_dir.parent, role, "auto", backend=judge.backend, description=job.description,
                                  positive=job.positive, max_side=cfg["judge"].get("image_max_side", 512))
             pick = (got or {}).get("pick") or {}
@@ -377,7 +426,35 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         except Cancelled:
             raise
         except Exception as e:
+            cost += float(getattr(e, "cost_usd", 0.0))
             log(f"warning: choosing a saved {role} failed ({str(e)[:200]})")
+    tg = job.targets
+    style_from, style_words = None, ""
+    if job.description.strip() and tg.missing() and len(tg.missing()) < 3:
+        # Some targets given, others left to the description ("this character, arms crossed,
+        # in flat colours"): judge the missing ones against the goal, not the reference image.
+        tg = replace(tg, goal_for_missing=True)
+        if "style" in tg.missing() and tg.subject.image is not None:
+            # No style given: a style the description names is the aim; with none named, the
+            # run keeps the character's own look, so the character image is the style target too.
+            report({"type": "stage", "round": 0, "phase": "explore", "stage": "reading the description's style"})
+            try:
+                named, words, c = names_style(prompt_backend, job.description)
+                cost += c
+            except Cancelled:
+                raise
+            except Exception as e:  # keep judging the style against the description, as it says
+                cost += float(getattr(e, "cost_usd", 0.0))
+                named, words = True, ""
+                log(f"warning: couldn't tell whether the description names an art style ({str(e)[:160]}); "
+                    "judging the style against the description")
+            if named:
+                style_from, style_words = "description", words
+                log("style: from the description" + (f" ({words})" if words else ""))
+            else:
+                style_from = "character image"
+                tg = replace(tg, style=Target(image=tg.subject.image, name=tg.subject.name))
+                log("style: the description names none, so the character image's own look")
     # 0a. Checkpoint and LoRAs. "auto": the LLM picks style LoRAs from the managed folders
     # (Settings -> LoRAs) by comparing the reference with each LoRA's Civitai examples;
     # LoRAs outside those folders stay as the workflow has them. "workflow": the saved
@@ -411,14 +488,23 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         report({"type": "stage", "round": 0, "phase": "explore", "stage": "choosing LoRAs"})
         pinned = tuple((n, w) for n, w in workflow_loras if n not in index)
         try:
-            lora_pick = pick_loras(judge.backend, library, job.targets.style.image or job.reference,
+            # The style to match: the style image, else the description's style when it names
+            # one (no image then), else the main image (the character's own look).
+            style_ref = None if style_from == "description" else tg.style.image or job.reference
+            context = lora_context(job, tg, style_ref, runs_dir.parent / "poses", lc, cfg)
+            if context:
+                log("LoRA choice also sees the " + " and ".join(f"{r} image" for r, _, _ in context))
+            lora_pick = pick_loras(judge.backend, library, style_ref,
                                    job.description or job.positive or flows.default("positive"), ckpt_base,
-                                   max_loras, {**cfg["judge"], **lcfg})
+                                   max_loras, {**cfg["judge"], **lcfg},
+                                   style_text=(style_words or job.description) if style_from == "description" else "",
+                                   context=context)
             start_loras = pinned + tuple((n, w) for n, w, _ in lora_pick["picks"])
             alternatives = lora_pick["alternatives"]
             log("LoRAs picked: " + (", ".join(f"{lora_stem(n)} {w:g}" for n, w, _ in lora_pick["picks"]) or "none")
                 + (f"; alternatives to test: {', '.join(lora_stem(n) for n, _ in alternatives)}" if alternatives else ""))
         except Exception as e:  # a failed pick shouldn't cost the job: fall back to the workflow's LoRAs
+            cost += float(getattr(e, "cost_usd", 0.0))
             log(f"warning: LoRA picking failed ({str(e)[:200]}); using the workflow's LoRAs")
     elif lora_mode == "auto":
         log("LoRA mode is auto but the LoRA index is empty (Settings -> LoRAs -> Refresh); using the workflow's")
@@ -473,8 +559,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
             except Cancelled:
                 raise
             except Exception as e:  # optional: the job goes on without a pose
+                cost += float(getattr(e, "cost_usd", 0.0))
                 log(f"warning: choosing a pose failed ({str(e)[:200]}); continuing without one")
-    tg = job.targets
     if tg.pose.image and pose_setting in ("off", "reference") and \
             str(job.settings.get("pose_control", True)).lower() not in ("false", "0", "off"):
         pose_setting = "image"  # the job's own pose image (a pose target), through the ControlNet
@@ -497,15 +583,20 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
             pose_data = None
         if pose_data and pose_setting != "reference":
             lc["pose_from_library"] = True
+    if tg.goal_for_missing and "pose" in tg.missing() and not lc.get("pose_from_library"):
+        lc["pose_from_goal"] = True  # the pose is only in the description
+        log("the pose comes from the description: judged against the goal, never by repainting the reference")
     run_info = {"job": job.name, "checkpoint": ckpt_name, "checkpoint_base": ckpt_base,
                 "workflow": flows.spec.get("file"), "fixed_inputs": flows.fixed_inputs(),
                 "judge_backend": cfg["judge"]["backend"],
-                "judge_model": cfg["judge"].get(cfg["judge"]["backend"], {}).get("model"),
+                "judge_model": judge_model, "confirm_model": confirm_model,
+                "prompt_model": cfg["judge"].get("prompt_model") or judge_model,
+                "confirm_threshold": confirm_threshold,
                 "threshold": threshold, "lora_mode": lora_mode, "workflow_loras": workflow_loras,
                 "start_loras": start_loras, "lora_pick": lora_pick,
                 "pose": {"setting": pose_setting, "active": bool(pose_data), "description": pose_desc,
                          "picked_by_llm": pose_pick},
-                "targets": tg.to_dict(),
+                "targets": tg.to_dict(), "style_from": style_from,
                 "incompatible_loras": [lora_stem(n) for n, _ in start_loras
                                        if compatible(index.get(n, {}).get("base_model"), ckpt_base) is False]}
     if run_info["incompatible_loras"]:
@@ -518,17 +609,23 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     from_image = not job.description.strip() and not job.positive.strip()
     if job.description or from_image:
         # Separate targets: each part of the prompt from its own target (targets.prompt_parts).
+        # A saved pose (or pose image) the ControlNet imposes is the prompt's POSE target, so the
+        # pose words come from it and not from the character image, whose own pose the prompt
+        # writer otherwise copies ("arms at sides" under a crossed-arms skeleton, 2026-10-04).
+        ptg = tg
+        if lc.get("pose_from_library") and pose_desc.strip() and tg.pose.empty:
+            ptg = replace(tg, pose=Target(text=pose_desc.strip(), name=pose_setting))
         report({"type": "stage", "round": 0, "phase": "explore",
-                "stage": "writing prompt from " + ("the style, subject and pose" if tg.split
+                "stage": "writing prompt from " + ("the style, subject and pose" if ptg.split
                                                    else "the reference image" if from_image else "description")})
-        written = write_prompt(judge.backend, job.description, job.positive, job.negative,
+        written = write_prompt(prompt_backend, job.description, job.positive, job.negative,
                                flows.default("positive"), flows.default("negative"),
-                               None if tg.split else
+                               None if ptg.split else
                                job.reference if from_image or lc.get("prompt_sees_reference", True) else None,
                                cfg["judge"].get("image_max_side", 512),
                                prompt_notes(library, start_loras) if library else "",
                                pose_desc if lc.get("pose_from_library") else "",
-                               targets=prompt_parts(tg) if tg.split else None)
+                               targets=prompt_parts(ptg) if ptg.split else None)
         prompt_info = {"description": job.description or "(none: written from the reference image)",
                        "input_positive": job.positive,
                        "input_negative": job.negative, "merged": bool(job.positive or job.negative), **written}
@@ -584,21 +681,46 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     uploaded = {"reference": upload(render_ref)}     # source role -> ComfyUI name
     # IP-Adapters: the subject image carries the character (linear), the style image the look
     # (style transfer). Only for images given as targets; a one-reference job renders as before.
+    # A job from Home -> Run automatically carries the form's settings (on/off, weights, the
+    # character's preset, background removal); anything it doesn't set comes from config.json.
     ipa = []
     ip_cfg = cfg.get("ipadapter", {})
+    js = job.settings
     if ip_cfg.get("enabled", True) and lc.get("ipadapter", True):
-        for role, weight, wtype in (("subject", ip_cfg.get("subject_weight", 0.6), ip_cfg.get("weight_type", "linear")),
-                                    ("style", ip_cfg.get("style_weight", 0.5), ip_cfg.get("style_weight_type", "style transfer"))):
+        for role, weight, wtype in (("subject", _num(js.get("subject_ip_weight"), ip_cfg.get("subject_weight", 0.6)),
+                                     ip_cfg.get("weight_type", "linear")),
+                                    ("style", _num(js.get("style_ip_weight"), ip_cfg.get("style_weight", 0.5)),
+                                     ip_cfg.get("style_weight_type", "style transfer"))):
             img = tg.get(role).image
-            if img is None or float(weight or 0) <= 0 or (role == "style" and img == tg.subject.image):
+            if img is None or float(weight or 0) <= 0 or (role == "style" and img == tg.subject.image) \
+                    or not _flag(js.get(f"{role}_ip"), True):
                 continue
-            ipa.append({"image": upload(img), "preset": ip_cfg.get("preset", "PLUS (high strength)"),
+            ip_img = img
+            if role == "subject" and _flag(js.get("subject_cutout"), subject_cutout_default(ip_cfg)):
+                try:  # its background tints every render otherwise (nobg.cutout)
+                    ip_img = nobg_mod.cutout(img, comfy=comfy, cfg=cfg, cache_dir=runs_dir.parent / "cache" / "cutouts",
+                                             upload=upload)
+                    run_info["subject_cutout"] = True
+                    log("IP-Adapter: the character image with its background removed")
+                except Exception as e:
+                    cost += float(getattr(e, "cost_usd", 0.0))
+                    log(f"warning: couldn't remove the character image's background ({str(e)[:160]}); using it as it is")
+            if role == "subject":  # the encoder sees a centre square: pad, or the head is cut off
+                ip_img = nobg_mod.square_for_ip(ip_img, runs_dir.parent / "cache" / "cutouts")
+            ipa.append({"image": upload(ip_img),
+                        "preset": (js.get("ip_preset") or subject_preset(ip_cfg)) if role == "subject"
+                        else ip_cfg.get("preset", "PLUS (high strength)"),
                         "weight": float(weight), "weight_type": wtype, "start": 0.0,
                         "end": float(ip_cfg.get("end", 1.0)), "role": role})
             shutil.copy2(img, out_dir / f"target_{role}{img.suffix}")
+        scaled = cap_ip_weights(ipa, max_combined(ip_cfg))
+        if scaled:
+            log(scaled)
+            run_info["ip_scaled"] = scaled
         if ipa:
             log("IP-Adapter: " + ", ".join(f"{a['role']} image ({a['weight_type']}, {a['weight']:g})" for a in ipa))
     run_info["ipadapter"] = [{k: v for k, v in a.items() if k != "image"} for a in ipa]
+    (out_dir / "run.json").write_text(json.dumps(run_info, indent=2), encoding="utf-8")
     params = replace(enforce_reference_rules(initial_params(job, cfg.get("defaults", {})), lc), loras=start_loras)
     # 0c. Starting sampler settings from the LLM (optional; the judge tunes them from round 2).
     if lc.get("ai_settings"):
@@ -620,10 +742,13 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         except Cancelled:
             raise
         except Exception as e:  # keep the job's own settings rather than lose the job
+            cost += float(getattr(e, "cost_usd", 0.0))
             log(f"warning: choosing sampler settings failed ({str(e)[:200]}); using {advisor.summary(vars(params))}")
     modes = allowed_modes(lc)
     min_dn = lc.get("min_reference_denoise") or 0
-    rules = ("The result must be a NEW image of the same character and style, not a copy of the reference. "
+    rules = (("The result must be a NEW image of the same character in the art style the GOAL describes, not a "
+              "copy of the reference. " if style_from == "description" else
+              "The result must be a NEW image of the same character and style, not a copy of the reference. ")
              + (f"img2img_reference is limited to denoise >= {min_dn:g}. " if min_dn else "")
              + ("" if "inpaint_reference" in modes else "Inpainting the reference is not available; "
                 "inpaint_best repairs the best result instead. ")
@@ -634,6 +759,9 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
              + ("The pose comes from a separate POSE image through a ControlNet: judge composition against "
                 "that pose, not the reference's. Starting from the reference image is disabled, since it "
                 "would bring the reference's pose back. " if lc.get("pose_from_library") else
+                "The pose and framing come from the GOAL, not from any target image: judge composition against "
+                "the GOAL's pose. Starting from the reference image is disabled, since it would bring its pose "
+                "back. " if lc.get("pose_from_goal") else
                 "A pose ControlNet holds the reference's pose in every render. " if control else "")
              + ("Items the reference doesn't have (accessories, emblems, straps, props) count against a "
                 "candidate (the 'extras' criterion)." if lc.get("penalize_extras", True)
@@ -645,6 +773,10 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         rubric = {**rubric, "composition": {**rubric["composition"], "anchors": (
             "Pose and framing compared with the POSE skeleton image, NOT the reference: 10 = the skeleton's "
             "pose and framing; 5 = similar framing, different arms or legs; 0 = unrelated.")}}
+    if lc.get("pose_from_goal") and "composition" in rubric:
+        rubric = {**rubric, "composition": {**rubric["composition"], "anchors": (
+            "Pose and framing compared with the pose the GOAL describes, NOT any target image's pose: 10 = "
+            "the GOAL's pose and framing; 5 = similar framing, different arms or legs; 0 = unrelated.")}}
     memory = JudgeMemory(judge, lc.get("history_keep_rounds", 2), int(lc.get("prompt_token_budget", 8000)))
     confirm = lc.get("confirm_pass", True)
 
@@ -758,6 +890,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                 sims = scoring.similarities(job.reference, paths)
                 order = sorted(order, key=lambda i: -sims[i])[: lc["send_top_k"]]
             except Exception as e:  # an optional speed-up must never fail the job
+                cost += float(getattr(e, "cost_usd", 0.0))
                 use_local = False
                 log(f"local pre-filter unavailable ({str(e).strip().splitlines()[0][:150]}); judging every candidate")
         sent = [paths[i] for i in order]
@@ -793,11 +926,11 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         for pos, i in enumerate(order):
             scores_by_candidate[i] = review.scores[pos]
             diffs_by_candidate[i] = differences_of(review.raw, pos)
-        record({"type": "round", "round": rnd, "phase": phase, "params": [p.to_dict() for p in batch],
+        record({"type": "round", "round": rnd, "phase": phase, "judge_model": judge_model, "params": [p.to_dict() for p in batch],
                 "rendered_positive": [rendered_positive(p) for p in batch], "source": source_used.get(rnd),
                 "sent": order, "scores": scores_by_candidate, "best": round_best,
                 "review": review.raw, "cost_usd": review.cost_usd, "prompt_tokens": review.prompt_tokens})
-        report({"type": "round", "round": rnd, "phase": phase, "images": paths, "scores": scores_by_candidate,
+        report({"type": "round", "round": rnd, "phase": phase, "judge_model": judge_model, "images": paths, "scores": scores_by_candidate,
                 "params": [p.short() for p in batch], "round_best": round_best, "round_score": round_score,
                 "differences": diffs_by_candidate,
                 "best_score": best_score, "best_image": best_image, "diagnosis": review.diagnosis,
@@ -821,14 +954,19 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                                   lora_menu, pose_judge, targets=tg)
             cost += check.cost_usd
             recheck = check.scores[0]
-            scored[candidate] = [recheck]
+            passed = recheck >= confirm_threshold
+            # Keep ranking on the first model's scale; rejection removes pass eligibility.
+            ranked = (recheck if passed else min(recheck, threshold - 0.1)) if confirm_model == judge_model else (first if passed else min(first, threshold - 0.1))
+            scored[candidate] = [ranked]
             criteria_by[candidate] = criteria_of(check.raw, 0)
             update_best(rnd)
-            passed = recheck >= threshold
+            passed = recheck >= confirm_threshold
             record({"type": "confirm", "round": rnd, "image": candidate.name, "first": first,
-                    "recheck": recheck, "passed": passed, "review": check.raw, "cost_usd": check.cost_usd})
+                    "recheck": recheck, "passed": passed, "judge_model": judge_model,
+                    "confirm_model": confirm_model, "confirm_threshold": confirm_threshold, "review": check.raw, "cost_usd": check.cost_usd})
             report({"type": "confirm", "round": rnd, "image": candidate, "first": first, "recheck": recheck,
-                    "passed": passed, "diagnosis": check.diagnosis, "best_score": best_score,
+                    "passed": passed, "judge_model": judge_model, "confirm_model": confirm_model,
+                    "confirm_threshold": confirm_threshold, "diagnosis": check.diagnosis, "best_score": best_score,
                     "best_image": best_image, "cost_usd": cost})
             if passed:
                 log(f"pass confirmed: {first:g} then {recheck:g}")
@@ -836,7 +974,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                 status = "done"
                 # The job ends on the image that passed both looks, not on a higher
                 # first-look score in the same round that was never re-checked.
-                best_image, best_score = candidate, recheck
+                best_image, best_score = candidate, ranked
                 break
             log(f"pass not confirmed ({first:g} then {recheck:g}): {check.diagnosis[:120]}")
             memory.add(f"r{rnd} re-check of {candidate.name}: {recheck:g} (first {first:g}). "
@@ -851,6 +989,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
             edit = check.edit
 
         # 5. Stop rules.
+        cost = usage.total_or(cost)
         if cost >= max_cost:
             log("cost budget reached")
             break
@@ -928,6 +1067,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                 log(f"hands refined: {before.scores[0]:g} before, {after.scores[0]:g} after; "
                     + ("keeping the refined image" if kept else "keeping the original"))
         except Exception as e:  # an optional finishing pass must never cost the job its result
+            cost += float(getattr(e, "cost_usd", 0.0))
             log(f"warning: hand refine failed ({str(e)[:200]})")
 
     fix_info = None
@@ -965,6 +1105,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         except Cancelled:
             log("auto-fix stopped")
         except Exception as e:  # an optional finishing pass must never cost the job its result
+            cost += float(getattr(e, "cost_usd", 0.0))
             log(f"warning: auto-fix failed ({str(e)[:200]})")
 
     best = None
@@ -999,7 +1140,9 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
             except Cancelled:
                 log("upscale stopped")
             except Exception as e:  # an optional finishing pass must never cost the job its result
+                cost += float(getattr(e, "cost_usd", 0.0))
                 log(f"warning: upscale failed ({str(e)[:200]})")
+    cost = usage.total_or(cost)
     (out_dir / "summary.json").write_text(json.dumps({
         "job": job.name, "status": status, "best_score": best_score, "milestones": milestones,
         "best_image": best_image.name if best_image else None, "rounds": rnd, "cost_usd": round(cost, 4),

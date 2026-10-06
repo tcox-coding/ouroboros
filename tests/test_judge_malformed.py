@@ -40,5 +40,6 @@ def test_string_candidates_are_asked_again():
 
 def test_two_unusable_answers_fail_clearly():
     b = Backend({"candidates": []}, {"oops": 1})
-    with pytest.raises(RuntimeError, match="scored no candidate"):
+    with pytest.raises(RuntimeError, match="scored no candidate") as exc:
         judge(b).review(IMG, "goal", "txt2img", "", [IMG])
+    assert exc.value.cost_usd == pytest.approx(0.002)

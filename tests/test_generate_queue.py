@@ -137,7 +137,7 @@ def test_one_failed_autofix_does_not_stop_the_others(tmp_path, monkeypatch):
         return {"fixed": None, "issues_found": [], "issues_left": [], "rounds": []}
     monkeypatch.setattr(af, "run_and_record", flaky)
     import ouroboros.backends as backends
-    monkeypatch.setattr(backends, "make_backend", lambda cfg: None)
+    monkeypatch.setattr(backends, "make_backend", lambda cfg, role="judge": None)
     gen.configure(root=tmp_path, rel_url=lambda p: str(p), load_config=lambda: {}, prepare=lambda: None,
                   fix_target=lambda run: {})
     gen.JOBS["t"] = {"id": "t"}
@@ -221,7 +221,7 @@ def ai_settings(monkeypatch):
     monkeypatch.setattr(runner, "lora_library", lambda cfg: FakeLibrary({}))
 
     def use(backend):
-        monkeypatch.setattr(backends, "make_backend", lambda cfg: backend)
+        monkeypatch.setattr(backends, "make_backend", lambda cfg, role="judge": backend)
     return use
 
 
@@ -268,7 +268,7 @@ def test_home_ai_pose_pick_uses_the_pose_and_records_it(home_run, monkeypatch, t
     monkeypatch.setattr(pm, "available", lambda: True)
     monkeypatch.setattr(pm, "has_body", lambda p, min_points=4: True)
     monkeypatch.setattr(pm, "render", lambda pose, size, **k: Image.new("RGB", size))
-    monkeypatch.setattr(backends, "make_backend", lambda cfg: type("B", (), {
+    monkeypatch.setattr(backends, "make_backend", lambda cfg, role="judge": type("B", (), {
         "complete": lambda self, *a: ({"pose": "hands_on_hips", "reason": "fits"}, 0.0, 0)})())
     job = home_run(pose_library="auto", size="auto")
     assert "hands_on_hips" in job["pose_notes"] and "832x1216" in job["params"]  # auto size follows the pose
@@ -288,3 +288,40 @@ def test_autofix_and_upscale_only_take_image_names_inside_the_run(tmp_path, monk
         gen.start_upscale("manual/r1", ["../../../secret.png"])
     with pytest.raises(FileNotFoundError):
         gen.start_autofix("manual/r1", ["../../../secret.png"])
+
+
+def test_a_saved_pose_is_the_prompts_pose_and_the_character_is_seen_whole(home_run, tmp_path, monkeypatch):
+    """A character in a saved pose: the prompt writer gets the saved pose as the POSE target
+    (it copied the character image's own pose before: "arms at sides" under a crossed-arms
+    skeleton), and the character's IP-Adapter image is padded to a square, as its encoder
+    centre-crops anything else and cut the character's head off."""
+    import base64
+    import io
+
+    import ouroboros.backends as backends
+    import ouroboros.pose as pm
+    import ouroboros.prompter as prompter
+    from PIL import Image
+    d = tmp_path / "poses" / "crossed"
+    d.mkdir(parents=True)
+    Image.new("RGB", (768, 1344)).save(d / "source.png")
+    (d / "pose.json").write_text(json.dumps({"body": [[0.5, 0.5]] * 18, "size": [768, 1344],
+                                             "description": "cowboy shot, arms crossed"}))
+    monkeypatch.setattr(pm, "has_body", lambda p, min_points=4: True)
+    monkeypatch.setattr(pm, "render", lambda pose, size, **k: Image.new("RGB", size))
+    monkeypatch.setattr(backends, "make_backend", lambda cfg, role="judge": None)
+    seen = {}
+
+    def fake_write(backend, description, *a, targets=None, **k):
+        seen.update(targets=targets, pose_note=k.get("pose_note"))
+        return {"positive": "1girl, arms crossed", "negative": "", "notes": ""}
+    monkeypatch.setattr(prompter, "write_prompt", fake_write)
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 1000), (200, 180, 150)).save(buf, "PNG")  # a tall full-body character
+    home_run(positive="", description="the subject in the given pose", pose_library="crossed", pose_control=True,
+             subject_b64="data:image/png;base64," + base64.b64encode(buf.getvalue()).decode(),
+             subject_ip=True, subject_cutout=False, size=[768, 1344])
+    texts = " ".join(p.get("text", "") for p in seen["targets"])
+    assert "POSE" in texts and "arms crossed" in texts
+    ip = [u for u in FakeComfy.uploads if u[0].endswith("_square.png")]
+    assert ip and ip[0][1] == (1000, 1000)

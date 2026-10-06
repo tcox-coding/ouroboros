@@ -88,7 +88,7 @@
         "deepinfra"
       ],
       "label": "MiMo V2.6 Flash (DeepInfra), cheapest",
-      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 3.6 s a call, $0.13 per 1000 calls; ranks every labelled pair right but names the flaw in 83% of looks (others 100%). Writes adult prompts. Threshold 71. Takes at most 4 images a request (the backend leaves the rest out). In 5 real rendered jobs (2026-10-04): referee 44.7 of 100, well behind the Gemmas.",
+      "notes": "Measured 2026-10-03 on eval/judge_set.json (11 images x 5 looks, the loop's own judge call): with reasoning_effort none: 3.6 s a call, $0.13 per 1000 calls; ranks every labelled pair right but names the flaw in 83% of looks (others 100%). Writes adult prompts. Threshold 71. Takes at most 4 images a request (the backend packs larger requests into a labelled contact sheet). In 5 real rendered jobs (2026-10-04): referee 44.7 of 100, well behind the Gemmas.",
       "settings": {
         "judge": {
           "backend": "deepinfra",

@@ -1,0 +1,13 @@
+.compare-dialog { width: min(1400px, 96vw); max-width: 96vw; max-height: 95vh; box-sizing: border-box; padding: 20px; background: var(--panel, #20222b); color: var(--text, #eee); border: 1px solid var(--border, #555); border-radius: 12px; }
+.compare-dialog::backdrop { background: #000b; }
+.compare-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; }
+.compare-toolbar strong { margin-right: auto; }
+.compare-toolbar label { display: flex; align-items: center; gap: 8px; }
+.compare-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.compare-panes section { min-width: 0; }
+.compare-panes h3 { margin: 0 0 8px; }
+.compare-viewport { width: 100%; height: min(66vh, 800px); overflow: auto; background: #111; cursor: grab; touch-action: none; }
+.compare-viewport:active { cursor: grabbing; }
+.compare-surface { display: flex; align-items: center; justify-content: center; }
+.compare-surface img { width: 100%; height: 100%; object-fit: contain; max-width: none; max-height: none; user-select: none; }
+@media (max-width: 600px) { .compare-dialog { padding: 10px; } .compare-panes { gap: 6px; } .compare-viewport { height: 50vh; } }

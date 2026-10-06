@@ -162,3 +162,32 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
         notes = (notes + " " if notes else "") + "Removed from the negative because the positive asks for them: " \
                 + ", ".join(conflicts) + "."
     return {"positive": out_pos, "negative": out_neg, "dropped": dropped, "notes": notes}
+
+
+# ---- does a description ask for an art style? ----------------------------------------------
+# An automatic run with a character image and a description but no style target: a style the
+# description names ("in Incase style, flat colours") is what the run aims for, and with none
+# named the run keeps the character image's own look (loop.run_job).
+STYLE_CHECK = """Does the DESCRIPTION ask for a particular art style? That is a named style, artist,
+game or show whose look it means; a medium (watercolour, oil painting, 3D render, pixel art,
+photo); or a way of drawing (flat colours, cel shading, thick outlines, sketchy lines, soft
+gradients). Words about the character, outfit, pose, expression, setting or mood are not an
+art style. JSON only."""
+
+STYLE_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {"names_style": {"type": "boolean"}, "style": {"type": "string"}},
+    "required": ["names_style", "style"],
+    "additionalProperties": False,
+}
+
+
+def names_style(backend, description: str) -> tuple[bool, str, float]:
+    """(whether the description asks for an art style, the words that do, cost)."""
+    data, cost, _ = backend.complete(STYLE_CHECK, [{"text": f"DESCRIPTION\n{description.strip()}"}],
+                                     STYLE_CHECK_SCHEMA, "style_check", 0)
+    data = data if isinstance(data, dict) else {}
+    named = data.get("names_style")
+    if isinstance(named, str):  # plain-JSON fallbacks sometimes send "true"/"false"
+        named = named.strip().lower() == "true"
+    return bool(named), str(data.get("style") or "").strip(), cost or 0.0

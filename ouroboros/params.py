@@ -178,10 +178,11 @@ def edit_prompt(prompt: str, add: list[str], remove: list[str]) -> str:
 def allowed_modes(lc: dict) -> list[str]:
     """Modes the planner may pick. Inpainting the reference keeps everything outside
     the mask identical to it, so it's off unless loop.allow_inpaint_reference is set.
-    With a pose from the pose library (lc["pose_from_library"]), nothing may start from
-    the reference: img2img would bring the reference's pose back."""
+    With a pose from the pose library (lc["pose_from_library"]) or only from the job's
+    description (lc["pose_from_goal"]), nothing may start from the reference: img2img would
+    bring the reference's pose back."""
     out = [m for m in MODES if m != "inpaint_reference" or lc.get("allow_inpaint_reference", False)]
-    if lc.get("pose_from_library"):
+    if lc.get("pose_from_library") or lc.get("pose_from_goal"):
         out = [m for m in out if MODES[m][2] != "reference" or m == "txt2img"]
     return out
 

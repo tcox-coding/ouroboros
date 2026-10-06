@@ -35,14 +35,18 @@ from .judge import model_options as _preset
 
 
 def evaluate(model: str, repeats: int = 2, log=print, temperature: float | None = None,
-             backend: str | None = None) -> dict:
+             backend: str | None = None, options: dict | None = None, confirm: bool = False,
+             image_ids: set[str] | None = None) -> dict:
     cfg = load_config()
     jc = json.loads(json.dumps(cfg["judge"]))
     # A hosted model and a local one are compared the same way; --backend picks which
     # section of the judge config the model name belongs to.
     bk = backend or ("deepinfra" if "/" in model and ":" not in model else cfg["judge"]["backend"])
     jc["backend"] = bk
+    jc["confirm_model"] = ""
+    jc["prompt_model"] = ""
     jc[bk].update({k: v for k, v in _preset(model, bk).items()})
+    jc[bk].update(options or {})
     jc[bk]["model"] = model
     if temperature is not None:  # --temp: same model, different sampling (consistency test)
         jc[bk]["temperature"] = temperature
@@ -54,20 +58,30 @@ def evaluate(model: str, repeats: int = 2, log=print, temperature: float | None 
     for group in data["groups"]:
         ref = ROOT / group["reference"]
         for img in group["images"]:
+            if image_ids is not None and img["id"] not in image_ids:
+                continue
             path = ROOT / img["path"]
             entry = results.setdefault(img["id"], {"scores": [], "differences": [], "flaw_hits": []})
             for _ in range(repeats):
                 t0 = time.monotonic()
+                billed, error = 0.0, None
                 try:
-                    r = judge.review(ref, group["goal"], "txt2img seed=1 steps=30 cfg=5.5 dpmpp_2m/karras denoise=1",
-                                     "", [path], None, "", rubric)
+                    if confirm:
+                        r = judge.confirm(ref, group["goal"], "txt2img seed=1 steps=30 cfg=5.5 dpmpp_2m/karras denoise=1",
+                                          path, None, "", rubric)
+                    else:
+                        r = judge.review(ref, group["goal"], "txt2img seed=1 steps=30 cfg=5.5 dpmpp_2m/karras denoise=1",
+                                         "", [path], None, "", rubric)
+                    billed = r.cost_usd
                     ok = True
                 except Exception as e:
                     log(f"  {model} {img['id']}: failed ({str(e)[:120]})")
                     ok, r = False, None
+                    billed, error = float(getattr(e, "cost_usd", 0.0)), str(e)[:300]
                 wall = time.monotonic() - t0
                 st = getattr(judge.backend, "last_stats", {}) or {}
                 calls.append({"image": img["id"], "ok": ok, "seconds": round(wall, 1),
+                              "cost_usd": billed, "error": error, "attempts": st.get("attempts"),
                               "eval_count": st.get("eval_count"), "eval_s": (st.get("eval_duration") or 0) / 1e9,
                               "load_s": (st.get("load_duration") or 0) / 1e9})
                 if not ok:
@@ -91,9 +105,26 @@ def evaluate(model: str, repeats: int = 2, log=print, temperature: float | None 
     else:
         quality = round(100 * (0.5 * pair_acc + 0.3 * flaw_recall + 0.2 * max(0.0, 1 - spread / 10)), 1)
     good = [c for c in calls if c["ok"]]
-    sec = statistics.mean(c["seconds"] for c in good) if good else float("inf")
+    sec = statistics.mean(c["seconds"] for c in calls) if calls else 0.0
     toks = [c["eval_count"] / c["eval_s"] for c in good if c["eval_count"] and c["eval_s"]]
-    return {"model": model + (f" (temp {temperature})" if temperature is not None else ""), "quality": quality, "pair_accuracy": round(pair_acc, 3), "pairs": len(pairs),
+    expected_pairs = [(a, b) for g in data["groups"] for a, b in g["pairs"]
+                      if image_ids is None or (a in image_ids and b in image_ids)]
+    good_ids = {a for a, _ in expected_pairs}
+    bad_ids = {b for _, b in expected_pairs}
+    good_scores = [s for i in good_ids for s in results.get(i, {}).get("scores", [])]
+    bad_scores = [s for i in bad_ids for s in results.get(i, {}).get("scores", [])]
+    calibration = None
+    if good_scores and bad_scores and all(results.get(i, {}).get("scores") for i in good_ids | bad_ids):
+        low_good, high_bad = min(good_scores), max(bad_scores)
+        threshold = min(100.0, round((low_good + high_bad) / 2 if low_good > high_bad else high_bad + 0.1, 1))
+        calibration = {"threshold": threshold, "margin": round(low_good - high_bad, 2),
+                       "false_pass_rate": sum(s >= threshold for s in bad_scores) / len(bad_scores),
+                       "good_pass_rate": sum(s >= threshold for s in good_scores) / len(good_scores),
+                       "provisional": True}
+    return {"cost_usd": sum(c["cost_usd"] for c in calls), "options": jc[bk],
+            "confirmation": confirm, "calibration": calibration,
+            "expected_pairs": len(expected_pairs),
+            "model": model + (f" (temp {temperature})" if temperature is not None else ""), "quality": quality, "pair_accuracy": round(pair_acc, 3), "pairs": len(pairs),
             "flaw_recall": round(flaw_recall, 3), "flaw_checks": len(hits),
             "score_spread": round(spread, 1) if spread is not None else None, "repeats": repeats,
             "seconds_per_call": round(sec, 1), "tokens_per_s": round(statistics.mean(toks), 1) if toks else None,
