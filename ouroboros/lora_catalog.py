@@ -147,6 +147,46 @@ def _with_briefs(items: list[dict], cache_dir: Path, root: Path | None = None) -
     return out
 
 
+_known: dict = {"key": None, "names": set()}
+
+
+def known_files(root: Path) -> set[str]:
+    """Lower-cased file names of every LoRA the classifier has a state for, whatever its
+    status: "caution" and "pending" ones included, so a folder holding them never counts
+    as unclassified (they must not be offered)."""
+    states = sorted((root / "state").glob("*.json"))
+    key = (len(states), max((p.stat().st_mtime for p in states), default=0.0))
+    if _known["key"] != key:
+        names = set()
+        for p in states:
+            try:
+                meta = json.loads(p.read_text(encoding="utf-8")).get("meta") or {}
+            except (OSError, ValueError):
+                continue
+            for n in (meta.get("filename"), meta.get("comfy_name")):
+                if n:
+                    names.add(n.replace("\\", "/").rsplit("/", 1)[-1].lower())
+        _known.update(key=key, names=names)
+    return _known["names"]
+
+
+def folder_card(rec: dict) -> dict:
+    """A card, in catalog() shape, for a LoRA the classifier hasn't seen (an index record
+    from its file's metadata and, after a LoRAs-tab refresh, Civitai)."""
+    import hashlib
+    name = rec["name"]
+    w = rec.get("typical_weight") or 0.8
+    return {
+        "id": "f" + hashlib.sha1(name.encode()).hexdigest()[:15], "comfy_name": name,
+        "file": Path(name.replace("\\", "/")).name, "title": rec.get("title") or Path(name).stem,
+        "summary": (rec.get("description") or "").strip()[:600] or "Not classified yet: no description.",
+        "category": "/".join(name.replace("\\", "/").split("/")[:-1]), "type": "", "tags": rec.get("tags", [])[:6],
+        "triggers": rec.get("trigger_words", []), "weight": {"min": 0.2, "default": w, "max": 1.2},
+        "scores": {}, "nsfw": "", "sha256": rec.get("sha256") or "", "base_model": rec.get("base_model") or "",
+        "example_prompt": "", "civitai_url": rec.get("civitai_url") or "", "examples": [], "unclassified": True,
+    }
+
+
 def by_name(root: Path, cache_dir: Path) -> dict[str, dict]:
     """ComfyUI lora name -> card, for showing what a run used."""
     return {e["comfy_name"]: e for e in catalog(root, cache_dir)}

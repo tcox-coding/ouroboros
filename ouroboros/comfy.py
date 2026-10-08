@@ -71,7 +71,12 @@ class ComfyClient:
                         self.cancel(pid)
                 raise Cancelled("cancelled")
             if time.monotonic() > deadline:
-                raise ComfyError("Timed out waiting for ComfyUI")
+                # The timeout is for a job ComfyUI has lost or a ComfyUI that stopped answering,
+                # not for a long one: a batch of 32 rendered in 10:53 and was given up on at 10:00
+                # (2026-10-06). While ComfyUI still has it running or queued, keep waiting.
+                if not self.in_queue([p for p in prompt_ids if p not in done]):
+                    raise ComfyError("Timed out waiting for ComfyUI")
+                deadline = time.monotonic() + self.timeout
             for pid in prompt_ids:
                 if pid in done:
                     continue
@@ -85,6 +90,15 @@ class ComfyClient:
                     done[pid] = h
             time.sleep(poll)
         return done
+
+    def in_queue(self, prompt_ids: list[str]) -> bool:
+        """Whether ComfyUI has any of these prompts running or waiting (False if it doesn't answer)."""
+        try:
+            q = requests.get(f"{self.url}/queue", timeout=10).json()
+        except (requests.RequestException, ValueError):
+            return False
+        ids = {item[1] for key in ("queue_running", "queue_pending") for item in q.get(key, []) if len(item) > 1}
+        return any(pid in ids for pid in prompt_ids)
 
     def cancel(self, prompt_id: str) -> None:
         """Take a prompt out of ComfyUI's queue, or stop it if it's the one rendering."""

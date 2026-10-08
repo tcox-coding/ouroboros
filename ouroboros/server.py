@@ -26,8 +26,9 @@ from . import nobg as nobg_mod
 from . import upscale as upscale_mod
 from .comfy import combo_options
 from .backends import deepinfra_models, ollama_models
+from .ckpt_info import checkpoint_note, prompt_setup
 from .jobs import IMAGE_EXTS, STATUSES, Queue, load_job
-from .loras import checkpoint_base, compatible
+from .loras import checkpoint_base, compatible, lora_folders_for
 from .params import lora_stem
 from .targets import max_combined
 from .runner import ROOT, Runner, comfy_launcher, load_config, lora_library, rel_url, save_config
@@ -108,9 +109,12 @@ def preview_prompt(data: dict) -> dict:
     from .workflow import Workflows
 
     cfg = load_config()
+    # The page sends its checkpoint ("" = as saved in the workflow); other callers get Settings'.
+    ckpt = (data["checkpoint"] if "checkpoint" in data else cfg.get("defaults", {}).get("checkpoint")) or ""
     try:
         flows = Workflows(ROOT / "workflows")
         style_pos, style_neg = flows.default("positive"), flows.default("negative")
+        ckpt = ckpt or flows.default("checkpoint")
     except Exception:
         style_pos = style_neg = ""
     import io
@@ -152,7 +156,7 @@ def preview_prompt(data: dict) -> dict:
     return write_prompt(make_backend(cfg["judge"], "prompt"), data.get("description", ""), data.get("prompt", ""),
                         data.get("negative", ""), style_pos, style_neg, None if split else reference,
                         cfg["judge"].get("image_max_side", 512), selected_lora_notes(cfg, data.get("loras")),
-                        targets=prompt_parts(tg) if split else None)
+                        targets=prompt_parts(tg) if split else None, **prompt_setup(cfg, ckpt))
 
 
 def runs_list(limit: int = 60) -> list[dict]:
@@ -588,7 +592,24 @@ def design_detail(design_id: str) -> dict:
                          "job": {"id": job["id"], "status": job["status"], "state": job.get("state")} if job else None})
     # Candidates already kept, so the page can mark them: "<session>/<image>".
     kept = sorted(f"{e.get('session')}/{e.get('candidate', '')}" for e in design["catalog"])
-    return {**design, "sessions": sessions, "kept": kept, "settings": designer.settings(load_config())}
+    return {**design, "sessions": sessions, "kept": kept, "settings": designer.settings(load_config()),
+            "source_description": _source_description(design)}
+
+
+def _source_description(design: dict) -> str:
+    """The description (Generate's "describe it" box, which the LLM writes prompts from) of the
+    History run a character was added from; "" when it came from elsewhere or had none."""
+    run = (design.get("source") or {}).get("run")
+    if design.get("description"):
+        return design["description"]
+    runs = (ROOT / "runs").resolve()
+    try:
+        rec_file = (runs / run / "run.json").resolve() if run else None
+        if rec_file is None or runs not in rec_file.parents:
+            return ""
+        return str((json.loads(rec_file.read_text(encoding="utf-8")).get("request") or {}).get("description") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 def create_design(data: dict) -> dict:
@@ -898,23 +919,43 @@ def default_checkpoint() -> str | None:
         return None
 
 
+def folder_checkpoints(folder: str) -> list[str]:
+    """Checkpoints under the folder, named as ComfyUI names them (relative path, subfolders too)."""
+    if not (folder or "").strip() or not Path(folder).is_dir():
+        return []
+    folder = Path(folder)
+    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*")
+                  if p.suffix.lower() in (".safetensors", ".ckpt") and p.is_file())
+
+
 def checkpoints() -> dict:
     cfg = load_config()
-    names = []
+    folder_str = (cfg.get("checkpoints_dir") or "").strip()
+    folder = Path(folder_str or "/nonexistent")
+    in_folder = folder_checkpoints(folder_str)
+    names, comfy_up = [], False
     try:
         info = requests.get(f"{cfg['comfy_url']}/object_info/CheckpointLoaderSimple", timeout=5).json()
         names = combo_options(info["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"])
+        comfy_up = True
     except Exception:
-        folder = Path(cfg.get("checkpoints_dir", ""))
-        names = sorted(p.name for p in folder.glob("*.safetensors")) if folder.is_dir() else []
-    folder = Path(cfg.get("checkpoints_dir", ""))
+        names = in_folder
+    # Checkpoints in the chosen folder that the running ComfyUI doesn't offer: it was started
+    # before the folder was chosen (or outside Ouroboros), so it needs a restart to load them.
+    not_loaded = [n for n in in_folder if n not in set(names)] if comfy_up else []
     out = []
+    from .ckpt_info import lookup
     for n in names:
         base = checkpoint_base(n, cfg.get("checkpoint_bases"))
+        info = lookup(n, cfg)
         f = folder / n
         out.append({"name": n, "base": base, "size_gb": round(f.stat().st_size / 1e9, 1) if f.exists() else None,
-                    "usable": base != "Flux"})
-    return {"items": out, "default": default_checkpoint(), "selected": cfg.get("defaults", {}).get("checkpoint") or ""}
+                    "usable": base != "Flux", "model": info["model"],
+                    "vpred": (info["prediction"] or "").startswith("v-"),
+                    "lora_folders": lora_folders_for(n, cfg)})
+    return {"items": out, "default": default_checkpoint(), "selected": cfg.get("defaults", {}).get("checkpoint") or "",
+            "folder": cfg.get("checkpoints_dir", ""), "folder_found": folder.is_dir() if folder_str else None,
+            "not_loaded": not_loaded}
 
 
 _di_models: tuple[float, list[str]] = (0.0, [])
@@ -934,11 +975,15 @@ def catalog_root() -> Path:
 
 
 def lora_cards(refresh: bool = False) -> list[dict]:
-    from .lora_catalog import catalog
+    """The classifier's cards, plus basic ones for folders it hasn't classified yet."""
+    from .lora_catalog import catalog, folder_card
     root = catalog_root()
     if not (root / "state").is_dir():
         return []
-    return catalog(root, ROOT / "cache", refresh)
+    cards = catalog(root, ROOT / "cache", refresh)
+    have = {c["comfy_name"] for c in cards}
+    extra = [folder_card(r) for n, r in lora_library(load_config()).unclassified().items() if n not in have]
+    return cards + sorted(extra, key=lambda c: c["title"].lower())
 
 
 def lora_thumb(lora_id: str) -> Path | None:
@@ -1032,6 +1077,7 @@ def public_settings() -> dict:
         },
         "loop": cfg["loop"], "designer": designer.settings(cfg),
         "defaults": cfg["defaults"],
+        "checkpoints_dir": cfg.get("checkpoints_dir", ""),
         "comfyui": cfg.get("comfyui", {}),
         "queue": cfg.get("queue", {}),
         "controlnet": cfg.get("controlnet", {}),
@@ -1127,6 +1173,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(public_settings())
             if path == "/api/comfyui":
                 return self.send_json(comfy_launcher(load_config()).status())
+            if path == "/api/preprompts":
+                from . import preprompts
+                return self.send_json({"models": preprompts.listing(load_config())})
             if path == "/api/loras/catalog":
                 items = lora_cards("refresh" in q)
                 from .lora_catalog import warm
@@ -1253,6 +1302,11 @@ class Handler(BaseHTTPRequestHandler):
                 from .lora_picker import suggest_loras
                 cfg = load_config()
                 cards = lora_cards()
+                # Only the LoRA folders for the checkpoint being used (NoobAI-XL for a NoobAI one).
+                from .loras import in_folders, lora_folders_for
+                folders = lora_folders_for(data.get("checkpoint") or default_checkpoint(), cfg)
+                keep_names = {l.get("name") for l in data.get("keep") or []}
+                cards = [c for c in cards if in_folders(c["comfy_name"], folders) or c["comfy_name"] in keep_names]
                 if not cards:
                     return self.send_json({"error": "no classified LoRAs found (loras.catalog_dir)"}, 400)
                 reference = _decode_image(data["image_b64"]) if data.get("image_b64") else None
@@ -1285,6 +1339,7 @@ class Handler(BaseHTTPRequestHandler):
                 out = advisor.suggest_settings(
                     make_backend(cfg["judge"]), checkpoint=ckpt,
                     checkpoint_base=checkpoint_base(ckpt, cfg.get("checkpoint_bases")),
+                    checkpoint_note=checkpoint_note(cfg, ckpt),
                     samplers=samplers, schedulers=schedulers,
                     current={"steps": int(current["steps"]), "cfg": float(current["cfg"]),
                              "sampler_name": current["sampler_name"], "scheduler": current["scheduler"]},
@@ -1357,6 +1412,24 @@ class Handler(BaseHTTPRequestHandler):
                 (data.get("loras") or {}).pop("civitai_api_key", None)  # keys go through /api/keys
                 save_config(data)
                 return self.send_json(public_settings())
+            if path == "/api/preprompts":
+                # {key, text}: the prompt writer's guidelines for one model; text that is empty or
+                # the default goes back to the default.
+                from . import preprompts
+                key = data.get("key") or ""
+                if key not in {k for k, _ in preprompts.MODELS}:
+                    return self.send_json({"error": "unknown model"}, 400)
+                text = (data.get("text") or "").strip()
+                keep = text if text and text != preprompts.default(key).strip() else None
+                save_config({"prompt_writer": {"preprompts": {key: keep}}})
+                return self.send_json({"models": preprompts.listing(load_config())})
+            if path == "/api/workflow/checkpoint":
+                name = (data.get("name") or "").strip()
+                if not name:
+                    return self.send_json({"error": "no checkpoint given"}, 400)
+                from .workflow import Workflows
+                Workflows.set_default(ROOT / "workflows", "checkpoint", name)
+                return self.send_json(checkpoints())
             if path == "/api/keys":
                 keys.save(data["name"], data.get("value", ""))
                 return self.send_json({"api_keys": keys.status()})

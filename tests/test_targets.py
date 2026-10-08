@@ -380,7 +380,7 @@ def test_auto_lora_picks_follow_the_style_rule(tmp_path, monkeypatch, named):
     import ouroboros.loop as loop
     got = {}
 
-    def fake_pick(backend, library, reference, goal, base, n, cfg, style_text="", context=None):
+    def fake_pick(backend, library, reference, goal, base, n, cfg, style_text="", context=None, folders=None):
         got.update(reference=reference, style_text=style_text, context=context)
         raise RuntimeError("stop here")  # the loop falls back to the workflow's LoRAs
     monkeypatch.setattr(loop, "pick_loras", fake_pick)

@@ -126,6 +126,24 @@ class Workflows:
         node_id, input_name = self.spec["roles"][role]
         return self.graph[node_id]["inputs"][input_name]
 
+    @staticmethod
+    def set_default(folder: Path, role: str, value) -> None:
+        """Save a new value for a role into the workflow file itself (e.g. which checkpoint is
+        "as saved in the workflow"). The first change keeps the original as <file>.orig.json."""
+        spec = json.loads(spec_path(folder).read_text(encoding="utf-8"))
+        node_id, input_name = spec["roles"][role]
+        path = folder / spec["file"]
+        text = path.read_text(encoding="utf-8")
+        graph = json.loads(text)
+        if node_id not in graph or input_name not in graph[node_id]["inputs"]:
+            raise KeyError(f"nodes.json role '{role}': {node_id}.{input_name} not in {spec['file']}")
+        backup = path.with_name(path.stem + ".orig.json")
+        if not backup.exists():
+            backup.write_text(text, encoding="utf-8")
+        graph[node_id]["inputs"][input_name] = value
+        path.write_text(json.dumps(graph, indent=2, ensure_ascii=False) + ("\n" if text.endswith("\n") else ""),
+                        encoding="utf-8")
+
     def workflow_size(self) -> tuple[int, int] | None:
         """(width, height) saved in the workflow, if it has width/height roles."""
         roles = self.spec["roles"]

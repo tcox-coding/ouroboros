@@ -410,13 +410,15 @@ def _run(gen_id: str, cfg: dict, req: dict, root: Path, rel_url, stop) -> None:
             from .prompter import write_prompt
             from .lora_picker import prompt_notes
             from .runner import lora_library
+            from .ckpt_info import prompt_setup
             picks = tuple((l["name"], float(l.get("strength", 0.8))) for l in req.get("loras") or [])
             written = write_prompt(make_backend(cfg["judge"], "prompt"), req.get("description", ""), "", negative,
                                    flows.default("positive"), flows.default("negative"),
                                    reference=None if split else main,
                                    max_side=cfg["judge"].get("image_max_side", 512),
                                    lora_notes=prompt_notes(lora_library(cfg), picks) if picks else "",
-                                   pose_note=pose_note, targets=prompt_parts(tg) if split else None)
+                                   pose_note=pose_note, targets=prompt_parts(tg) if split else None,
+                                   **prompt_setup(cfg, req.get("checkpoint") or flows.default("checkpoint")))
             positive, negative = written["positive"], written["negative"]
             llm_s = round(time.time() - t_llm, 1)
             _set(gen_id, positive=positive, negative=negative, prompt_notes=written.get("notes", ""))
@@ -833,6 +835,7 @@ def _ai_settings(gen_id: str, cfg: dict, req: dict, comfy, flows: Workflows, p: 
 
     from . import settings_advisor as advisor
     from .backends import make_backend
+    from .ckpt_info import checkpoint_note
     from .loras import checkpoint_base
     from .runner import lora_library
     t = time.time()
@@ -846,7 +849,7 @@ def _ai_settings(gen_id: str, cfg: dict, req: dict, comfy, flows: Workflows, p: 
         ckpt = req.get("checkpoint") or flows.default("checkpoint")
         chosen = advisor.suggest_settings(
             make_backend(cfg["judge"]), checkpoint=ckpt, checkpoint_base=checkpoint_base(ckpt, cfg.get("checkpoint_bases")),
-            samplers=samplers, schedulers=schedulers, current=current, positive=p.positive, negative=p.negative,
+            checkpoint_note=checkpoint_note(cfg, ckpt), samplers=samplers, schedulers=schedulers, current=current, positive=p.positive, negative=p.negative,
             description=req.get("description", ""), mode=p.mode, denoise=p.denoise, size=size,
             lora_notes=advisor.lora_lines(lora_library(cfg), p.loras),
             max_side=cfg["judge"].get("image_max_side", 512))

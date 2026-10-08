@@ -798,3 +798,17 @@ def test_versions_stay_whole_and_usable_after_every_edit_they_came_from_is_delet
                                  max_rounds=1)
     out, _ = run(root, d, again, FakeJudge([{"change": 5}]))
     assert out["status"] == "finished" and out["rounds"]
+
+
+def test_source_description(tmp_path, monkeypatch):
+    """Send to Generate: a character's description comes from the History run it was added from."""
+    import json as _json
+    from ouroboros import server
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    run = tmp_path / "runs" / "manual" / "r1"
+    run.mkdir(parents=True)
+    (run / "run.json").write_text(_json.dumps({"request": {"description": "a knight in silver armor"}}))
+    assert server._source_description({"source": {"run": "manual/r1"}}) == "a knight in silver armor"
+    assert server._source_description({"source": {"run": "manual/r1"}, "description": "own"}) == "own"
+    assert server._source_description({"source": {"upload": True}}) == ""
+    assert server._source_description({"source": {"run": "../../etc"}}) == ""  # never outside runs/

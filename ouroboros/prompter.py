@@ -19,9 +19,12 @@ from pathlib import Path
 
 from .params import drop_negative_conflicts, norm_tag, split_tags
 
-INSTRUCTIONS = """You write prompts for a Stable Diffusion XL (Pony-family) model: comma-separated
-tags and short phrases, one section per line with a blank line between sections, in this
-order: quality and source tags; drawing style; character (build, skin, face and chin
+# The general guidelines, used for every model without its own (preprompts.py; Settings >
+# Prompt writer guidelines edits them per model).
+GUIDE = """You write prompts for a Stable Diffusion XL model (CHECKPOINT names it and its
+tag conventions; without one, assume Pony Diffusion): comma-separated tags and short
+phrases, one section per line with a blank line between sections, in this order: quality
+and source tags; drawing style; character (build, skin, face and chin
 shape, eyes, expression); hair; clothing; pose and framing; background. Describe only
 what should be visible; no sentences, no explanations, no section headers.
 
@@ -35,10 +38,21 @@ garment colours, pose). Where the example or user prompts are long and weighted,
 their length and weighting style.
 
 Negative prompt: things to avoid (quality problems, wrong styles, and anything that
-contradicts the description, e.g. other hair colours, extra people, props).
+contradicts the description, e.g. other hair colours, extra people, props)."""
 
-Reply with JSON only."""
+# Always after the guidelines, whatever they say: what the app reads back, and how LoRAs work here.
+CONTRACT = """OUTPUT (this replaces any output format described above): reply with JSON only, with
+"positive" and "negative" (the two prompts: comma-separated tags, one section per line with a
+blank line between sections; no headings, labels, code fences or explanations), "dropped" (tags
+you removed from the user's prompts) and "notes" (a sentence or two on your choices).
+LoRAs are loaded separately by the app: put in only the trigger words listed under LORAS,
+exactly as written; never write <lora:...> tags or LoRA file names."""
+INSTRUCTIONS = GUIDE + "\n\n" + CONTRACT
 
+
+# A written prompt pair with notes is 500-650 tokens; three times that leaves room, and a
+# model repeating a tag is stopped well before the read timeout (see backends.capped_output).
+PROMPT_TOKENS = 1536
 
 SCHEMA = {
     "type": "object",
@@ -68,6 +82,21 @@ NEGATIVE_ONLY = re.compile(r"^\(?(score_[1-6]|source_(anime|furry|pony)|worst qu
                            r"bad anatomy|bad hands|watermark|signature)(:[\d.]+\)?)?$", re.I)
 
 
+PONY_TAG = re.compile(r"^\(?(score_\d(_up)?|source_[a-z]+|rating_[a-z]+)(:[\d.]+\)?)?$", re.I)
+
+
+def _drop_tags(text: str, pattern: re.Pattern, removed: list[str]) -> str:
+    """text without the tags matching pattern (added to removed), keeping its lines."""
+    lines = []
+    for line in text.splitlines():
+        kept = [t.strip() for t in line.split(",") if t.strip()]
+        removed += [t for t in kept if pattern.match(t)]
+        kept = [t for t in kept if not pattern.match(t)]
+        if kept or not line.strip():
+            lines.append(", ".join(kept))
+    return "\n".join(lines).strip()
+
+
 def _problems(positive: str, negative: str) -> list[str]:
     """What's structurally wrong with a written prompt pair (it happened in testing: a
     model put the whole negative into the positive and left the negative empty, and the
@@ -87,14 +116,22 @@ def _problems(positive: str, negative: str) -> list[str]:
 def write_prompt(backend, description: str, positive: str = "", negative: str = "",
                  style_positive: str = "", style_negative: str = "",
                  reference: Path | None = None, max_side: int = 512, lora_notes: str = "",
-                 pose_note: str = "", targets: list[dict] | None = None) -> dict:
+                 pose_note: str = "", targets: list[dict] | None = None, checkpoint_note: str = "",
+                 guidelines: str = "") -> dict:
     """Returns {"positive", "negative", "notes", "dropped"}.
+    checkpoint_note: ckpt_info.note() for the checkpoint that renders it (its model and tag conventions).
+    guidelines: that model's prompt-writing guidelines (preprompts.for_checkpoint); GUIDE when empty.
     targets: targets.prompt_parts(): separate STYLE / SUBJECT / POSE texts and images, each
     saying what to take from it (then `reference` is usually None)."""
     from_image = not description.strip() and not positive.strip() and not targets
     parts: list[dict] = [{"text": f"DESCRIPTION\n{description.strip()}" if not from_image else
                           "DESCRIPTION\n(none: write the prompt from the REFERENCE image alone, describing "
                           "the character, outfit, pose, framing, background and drawing style you see)"}]
+    if checkpoint_note:
+        parts.append({"text": "CHECKPOINT that renders this prompt (use its quality tags and tag conventions; where the "
+                              "example or user prompts carry quality tags made for another model family, e.g. Pony "
+                              "score_ tags for an Illustrious or NoobAI checkpoint, replace them with this model's and "
+                              "list the removed ones in \"dropped\"):\n" + checkpoint_note})
     if targets:
         parts.append({"text": "TARGETS: the render has a separate style, subject and pose. Take each part of the "
                               "prompt from its own target only, as each says:"})
@@ -135,13 +172,17 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
                                               "description wins where they differ):")},
                   {"image": reference}]
 
-    data, _cost, _tokens = backend.complete(INSTRUCTIONS, parts, SCHEMA, "prompt", max_side)
+    from .backends import capped_output
+    system = (guidelines.strip() or GUIDE) + "\n\n" + CONTRACT
+    with capped_output(backend, PROMPT_TOKENS):
+        data, _cost, _tokens = backend.complete(system, parts, SCHEMA, "prompt", max_side)
     problems = _problems(data.get("positive", ""), data.get("negative", ""))
     if problems:  # one more try, told what was wrong
         retry = parts + [{"text": "Your previous answer had these problems; fix them and answer again:\n- "
                                   + "\n- ".join(problems) + "\nPREVIOUS POSITIVE\n" + data.get("positive", "")[:1500]
                                   + "\nPREVIOUS NEGATIVE\n" + data.get("negative", "")[:800]}]
-        again, _cost, _tokens = backend.complete(INSTRUCTIONS, retry, SCHEMA, "prompt", max_side)
+        with capped_output(backend, PROMPT_TOKENS):
+            again, _cost, _tokens = backend.complete(system, retry, SCHEMA, "prompt", max_side)
         if len(_problems(again.get("positive", ""), again.get("negative", ""))) < len(problems):
             data = again
     dropped = [t for d in data.get("dropped") or [] for t in split_tags(d)]
@@ -152,10 +193,16 @@ def write_prompt(backend, description: str, positive: str = "", negative: str = 
         out_pos = "\n".join(", ".join(t.strip() for t in line.split(",") if t.strip() and norm_tag(t) not in gone)
                              for line in out_pos.splitlines()).strip()
         out_neg = ", ".join(leaked) + ("\n" + out_neg if out_neg else "")
+    from .ckpt_info import NO_PONY_TAGS
+    pony: list[str] = []
+    if NO_PONY_TAGS in checkpoint_note:  # not a Pony model: its score_/source_ tags do nothing
+        out_pos, out_neg = (_drop_tags(t, PONY_TAG, pony) for t in (out_pos, out_neg))
+    # The user's own tags come back even then (after the strip, so it doesn't undo it).
     if positive.strip():
         out_pos = _restore(positive, out_pos, dropped)
     if negative.strip():
         out_neg = _restore(negative, out_neg, dropped)
+    dropped += [t for t in pony if norm_tag(t) not in {norm_tag(x) for x in split_tags(out_pos + "," + out_neg)}]
     out_neg, conflicts = drop_negative_conflicts(out_pos, out_neg)
     notes = data.get("notes", "")
     if conflicts:

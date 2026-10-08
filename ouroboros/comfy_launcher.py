@@ -189,7 +189,29 @@ class ComfyLauncher:
         u = urlparse(self.url)
         cmd = [python, main, "--listen", u.hostname or "127.0.0.1", "--port", str(u.port or 8188),
                "--disable-auto-launch", *args, *self.cfg.get("extra_args", [])]
+        extra = self.model_paths_file()
+        if extra:
+            cmd += ["--extra-model-paths-config", str(extra)]
         return cmd, str(Path(main).parent.parent)
+
+    def model_paths_file(self) -> Path | None:
+        """A model-paths file adding the checkpoints folder chosen in Settings (checkpoints_dir)
+        and the loras root (loras.comfy_root), so ComfyUI loads checkpoints and LoRAs from them
+        as well as from its own folders: a LoRA folder added there for another model family
+        (e.g. NoobAI-XL next to Pony) is then loadable without linking it into ComfyUI's.
+        ComfyUI takes several of these files; Comfy Desktop's own one stays as it is."""
+        lines = []
+        for kind, folder in (("checkpoints", self.cfg.get("checkpoints_dir")), ("loras", self.cfg.get("loras_root"))):
+            folder = (folder or "").strip()
+            if folder and Path(folder).is_dir():
+                lines.append(f"  {kind}: '" + str(Path(folder).resolve()).replace("'", "''") + "'")
+        if not lines:
+            return None
+        path = self.log_file.parent / "comfy_model_paths.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Written by Ouroboros from Settings (Checkpoints folder, ComfyUI loras folder).\n"
+                        "ouroboros:\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
     def status(self) -> dict:
         if self.proc and self.proc.poll() is None:

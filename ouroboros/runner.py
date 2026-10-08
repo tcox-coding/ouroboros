@@ -57,10 +57,12 @@ _launchers: dict[str, ComfyLauncher] = {}
 def comfy_launcher(cfg: dict) -> ComfyLauncher:
     """One launcher per ComfyUI URL, shared by the web server and the queue runner."""
     url = cfg["comfy_url"]
+    opts = dict(cfg.get("comfyui", {}), checkpoints_dir=cfg.get("checkpoints_dir", ""),
+                loras_root=(cfg.get("loras") or {}).get("comfy_root", ""))
     if url not in _launchers:
-        _launchers[url] = ComfyLauncher(cfg.get("comfyui", {}), url, ROOT / "logs")
+        _launchers[url] = ComfyLauncher(opts, url, ROOT / "logs")
     else:
-        _launchers[url].cfg = cfg.get("comfyui", {})
+        _launchers[url].cfg = opts
     return _launchers[url]
 
 

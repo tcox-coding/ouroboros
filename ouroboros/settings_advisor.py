@@ -55,11 +55,14 @@ def schema(samplers: list[str], schedulers: list[str]) -> dict:
 def suggest_settings(backend, *, checkpoint: str, checkpoint_base: str, samplers: list[str],
                      schedulers: list[str], current: dict, positive: str = "", negative: str = "",
                      description: str = "", mode: str = "txt2img", denoise: float = 1.0,
-                     size: tuple[int, int] | None = None, lora_notes: str = "", max_side: int = 512) -> dict:
+                     size: tuple[int, int] | None = None, lora_notes: str = "", max_side: int = 512,
+                     checkpoint_note: str = "") -> dict:
     """Returns {"steps", "cfg", "sampler_name", "scheduler", "notes", "changed", "cost"}.
+    checkpoint_note: ckpt_info.note(), which model it is and whether it is v-prediction.
     `current` holds the values in use now (the fallback for anything the model gets wrong);
     "changed" lists the fields the suggestion actually changes."""
-    lines = [f"CHECKPOINT {checkpoint or '(the workflow default)'} (model family: {checkpoint_base})",
+    lines = [f"CHECKPOINT {checkpoint or '(the workflow default)'} (model family: {checkpoint_base})"
+             + (f"\n{checkpoint_note.splitlines()[0]}" if checkpoint_note else ""),
              f"MODE {mode}" + (f", denoise {denoise:g}" if mode != "txt2img" else ""),
              f"SIZE {size[0]}x{size[1]}" if size else "",
              "CURRENT SETTINGS " + ", ".join(f"{k}={current.get(k)}" for k in FIELDS),

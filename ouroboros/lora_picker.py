@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .judge import contact_sheet
-from .loras import LoraLibrary, compatible, lora_trigger
+from .loras import LoraLibrary, compatible, in_folders, lora_trigger
 from .params import LORA_STRENGTH, lora_stem
 
 INSTRUCTIONS = """You choose style LoRAs for a Stable Diffusion XL (Pony-family) model so that new
@@ -44,7 +44,8 @@ or gives that pose. Only their example images will be compared next. Reply with 
 
 
 def pick_loras(backend, library: LoraLibrary, reference: Path | None, goal: str, ckpt_base: str,
-               max_loras: int, cfg: dict, style_text: str = "", context: list[tuple] | None = None) -> dict:
+               max_loras: int, cfg: dict, style_text: str = "", context: list[tuple] | None = None,
+               folders: list[str] | None = None) -> dict:
     """Returns {"picks": [(name, strength, why)], "alternatives": [(name, strength)],
     "notes": str, "considered": [names], "shortlist": [names]}.
 
@@ -59,9 +60,12 @@ def pick_loras(backend, library: LoraLibrary, reference: Path | None, goal: str,
 
     context: the job's other images, each (role, image, tags) with role "subject" or "pose",
     shown labelled as what the images depict, not the style. With contact_sheet (one image
-    per message) they are tiles of the grid, and the shortlist gets only their tags."""
+    per message) they are tiles of the grid, and the shortlist gets only their tags.
+
+    folders: loras.lora_folders_for() the checkpoint; only LoRAs under them are candidates."""
     index = library.index()
-    cands = [r for r in index.values() if compatible(r.get("base_model"), ckpt_base) is not False]
+    cands = [r for r in index.values() if in_folders(r["name"], folders)
+             and compatible(r.get("base_model"), ckpt_base) is not False]
     cands.sort(key=lambda r: (compatible(r.get("base_model"), ckpt_base) is not True, not r.get("examples")))
     # With the classified catalog there are hundreds of candidates, and the shortlist
     # stage below is what narrows them: one compact line each is cheap enough to show all

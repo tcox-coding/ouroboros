@@ -27,7 +27,7 @@ from .comfy import Cancelled, ComfyClient
 from .jobs import Job
 from .judge import Judge
 from .lora_picker import pick_loras, prompt_notes
-from .loras import LoraLibrary, checkpoint_base, compatible, with_triggers
+from .loras import LoraLibrary, checkpoint_base, compatible, lora_folders_for, with_triggers
 from .params import (DEFAULT_DENOISE, MODES, GenParams, allowed_modes, apply_edit, enforce_reference_rules,
                      lora_stem, norm_tag, reseed_duplicates, split_tags, variants)
 from .prompter import names_style, write_prompt
@@ -465,6 +465,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
     checkpoint = job.settings.get("checkpoint") or cfg.get("defaults", {}).get("checkpoint") or None
     ckpt_name = checkpoint or flows.default("checkpoint")
     ckpt_base = checkpoint_base(ckpt_name, cfg.get("checkpoint_bases"))
+    from .ckpt_info import checkpoint_note, prompt_setup
+    ckpt_text = checkpoint_note(cfg, ckpt_name)  # the model and its tag conventions, for the LLMs
     lora_mode = lc.get("lora_mode") or lcfg.get("mode", "workflow")
     max_loras = int(lcfg.get("max_loras", 3))
     index = library.index() if library else {}
@@ -498,7 +500,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                                    job.description or job.positive or flows.default("positive"), ckpt_base,
                                    max_loras, {**cfg["judge"], **lcfg},
                                    style_text=(style_words or job.description) if style_from == "description" else "",
-                                   context=context)
+                                   context=context, folders=lora_folders_for(ckpt_name, cfg))
             start_loras = pinned + tuple((n, w) for n, w, _ in lora_pick["picks"])
             alternatives = lora_pick["alternatives"]
             log("LoRAs picked: " + (", ".join(f"{lora_stem(n)} {w:g}" for n, w, _ in lora_pick["picks"]) or "none")
@@ -625,7 +627,7 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                                cfg["judge"].get("image_max_side", 512),
                                prompt_notes(library, start_loras) if library else "",
                                pose_desc if lc.get("pose_from_library") else "",
-                               targets=prompt_parts(ptg) if ptg.split else None)
+                               targets=prompt_parts(ptg) if ptg.split else None, **prompt_setup(cfg, ckpt_name))
         prompt_info = {"description": job.description or "(none: written from the reference image)",
                        "input_positive": job.positive,
                        "input_negative": job.negative, "merged": bool(job.positive or job.negative), **written}
@@ -727,7 +729,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
         report({"type": "stage", "round": 0, "phase": "explore", "stage": "choosing sampler settings"})
         try:
             chosen = advisor.suggest_settings(
-                judge.backend, checkpoint=ckpt_name, checkpoint_base=ckpt_base, samplers=samplers,
+                judge.backend, checkpoint=ckpt_name, checkpoint_base=ckpt_base, checkpoint_note=ckpt_text,
+                samplers=samplers,
                 schedulers=schedulers, current={k: getattr(params, k) for k in advisor.FIELDS},
                 positive=rendered_positive(params), negative=params.negative, description=job.description,
                 mode=params.mode, denoise=params.denoise, size=size,
@@ -765,7 +768,8 @@ def run_job(job: Job, cfg: dict, comfy: ComfyClient, flows: Workflows, judge: Ju
                 "A pose ControlNet holds the reference's pose in every render. " if control else "")
              + ("Items the reference doesn't have (accessories, emblems, straps, props) count against a "
                 "candidate (the 'extras' criterion)." if lc.get("penalize_extras", True)
-                else "Extra items the reference doesn't have are acceptable; don't penalize them."))
+                else "Extra items the reference doesn't have are acceptable; don't penalize them.")
+             + (f"\nCHECKPOINT (prompt edits must follow its tag conventions): {ckpt_text}" if ckpt_text else ""))
     rubric = judge.rubric(lc.get("penalize_extras", True))
     if lc.get("pose_from_library") and "composition" in rubric:
         # In testing the judge kept marking composition down for "not matching the

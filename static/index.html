@@ -50,11 +50,11 @@
              transition: width .18s ease; z-index: 15; }
   .sidebar .grp { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); padding: 12px 12px 4px; white-space: nowrap; }
   .sidebar .grp:first-child { padding-top: 2px; }
-  .sidebar button { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 8px; color: var(--muted);
+  .sidebar a { display: flex; text-decoration: none; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 8px; color: var(--muted);
                     background: none; border: 0; font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; text-align: left; width: 100%; }
-  .sidebar button:hover { background: var(--panel-2); color: var(--text); }
-  .sidebar button.active { background: var(--accent-2); color: #fff; }
-  .sidebar button .i { width: 20px; height: 20px; }
+  .sidebar a:hover { background: var(--panel-2); color: var(--text); }
+  .sidebar a.active { background: var(--accent-2); color: #fff; }
+  .sidebar a .i { width: 20px; height: 20px; }
   .sidebar .count { margin-left: auto; font-size: 11px; background: var(--accent); color: #fff; border-radius: 99px; padding: 0 7px; }
   .sidebar .count:empty { display: none; }
   .sidebar .bottom { margin-top: auto; }
@@ -213,10 +213,23 @@
   .car-count { position: absolute; top: 10px; right: 10px; z-index: 2; background: rgba(20,18,19,.85); border-radius: 99px; padding: 1px 10px; font-size: 12px; }
   .car-under { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
   .car-under .note { margin: 0; }
-  .car-dots { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .car-dots { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; position: relative; }
   .car-dots button { all: unset; cursor: pointer; width: 52px; height: 52px; border-radius: 6px; overflow: hidden; border: 2px solid transparent; background: var(--well); }
   .car-dots button.active { border-color: var(--accent); }
   .car-dots img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* Generate's result panel, beside the form: exactly the window's height. The image takes the
+     room the rest leaves (status, progress bar, buttons, thumbnails, settings line), so the
+     panel never grows past the window and scrolls when a result adds those. */
+  @media (min-width: 1001px) {
+    .home-result .panel { height: calc(100vh - var(--head-h) - 32px); display: flex; flex-direction: column; overflow: hidden; }
+    .home-result .panel > * { flex: none; }
+    .home-result #gen-images { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }
+    .home-result #gen-images > * { flex: none; }
+    .home-result #gen-images > .car-stage { flex: 1 1 0; min-height: 120px; }
+    .home-result .car-slide.active, .home-result .car-slide img.thumb, .home-result .car-empty { height: 100%; }
+    .home-result .car-dots { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+    .home-result .car-dots button { flex: none; }
+  }
 
   /* LoRA browser: folder list on the left, details on the right */
   .lb { display: grid; grid-template-columns: minmax(280px, 2fr) 3fr; gap: 14px; height: 100%; min-height: 0; }
@@ -465,6 +478,7 @@
   .design-card img, .dv img.thumb { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; background: var(--well); border-radius: 6px; display: block; }
   .dv.cover { border-color: var(--accent); }
   .acts.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .acts.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .acts.two { grid-template-columns: 1fr 1fr; }
   .design-head { flex-wrap: wrap; }
   .design-head .btn { margin-left: 0; }
@@ -517,20 +531,20 @@
 <div class="shell">
 <nav class="sidebar" id="sidebar" aria-label="Pages">
   <div class="grp">Create</div>
-  <button data-tab="home" class="active" title="Generate"><svg class="i" data-icon="home"></svg><span class="lbl">Generate</span></button>
-  <button data-tab="run" title="Active Runs"><svg class="i" data-icon="activity"></svg><span class="lbl">Active Runs</span></button>
-  <button data-tab="design" title="Edit Character"><svg class="i" data-icon="brush"></svg><span class="lbl">Edit Character</span></button>
-  <button data-tab="queue" title="Queue"><svg class="i" data-icon="list"></svg><span class="lbl">Queue</span><span class="count" id="queue-count"></span></button>
+  <a data-tab="home" href="#home" class="active" title="Generate"><svg class="i" data-icon="home"></svg><span class="lbl">Generate</span></a>
+  <a data-tab="run" href="#run" title="Active Runs"><svg class="i" data-icon="activity"></svg><span class="lbl">Active Runs</span></a>
+  <a data-tab="design" href="#design" title="Edit Character"><svg class="i" data-icon="brush"></svg><span class="lbl">Edit Character</span></a>
+  <a data-tab="queue" href="#queue" title="Queue"><svg class="i" data-icon="list"></svg><span class="lbl">Queue</span><span class="count" id="queue-count"></span></a>
   <div class="grp">Results</div>
-  <button data-tab="history" title="History"><svg class="i" data-icon="clock"></svg><span class="lbl">History</span></button>
-  <button data-tab="favorites" title="Favorites"><svg class="i" data-icon="star"></svg><span class="lbl">Favorites</span></button>
+  <a data-tab="history" href="#history" title="History"><svg class="i" data-icon="clock"></svg><span class="lbl">History</span></a>
+  <a data-tab="favorites" href="#favorites" title="Favorites"><svg class="i" data-icon="star"></svg><span class="lbl">Favorites</span></a>
   <div class="grp">Library</div>
-  <button data-tab="loras" title="LoRAs"><svg class="i" data-icon="layers"></svg><span class="lbl">LoRAs</span></button>
-  <button data-tab="poses" title="Poses"><svg class="i" data-icon="pose"></svg><span class="lbl">Poses</span></button>
-  <button data-tab="styles" title="Styles"><svg class="i" data-icon="palette"></svg><span class="lbl">Styles</span></button>
-  <button data-tab="characters" title="Characters"><svg class="i" data-icon="user"></svg><span class="lbl">Characters</span></button>
+  <a data-tab="loras" href="#loras" title="LoRAs"><svg class="i" data-icon="layers"></svg><span class="lbl">LoRAs</span></a>
+  <a data-tab="poses" href="#poses" title="Poses"><svg class="i" data-icon="pose"></svg><span class="lbl">Poses</span></a>
+  <a data-tab="styles" href="#styles" title="Styles"><svg class="i" data-icon="palette"></svg><span class="lbl">Styles</span></a>
+  <a data-tab="characters" href="#characters" title="Characters"><svg class="i" data-icon="user"></svg><span class="lbl">Characters</span></a>
   <div class="bottom"></div>
-  <button data-tab="settings" title="Settings"><svg class="i" data-icon="sliders"></svg><span class="lbl">Settings</span></button>
+  <a data-tab="settings" href="#settings" title="Settings"><svg class="i" data-icon="sliders"></svg><span class="lbl">Settings</span></a>
 </nav>
 <div class="scrim" id="scrim"></div>
 
@@ -570,9 +584,9 @@
           <details id="prompts-box" style="margin-top:10px">
             <summary class="muted" style="cursor:pointer;font-size:13px">Positive and negative prompt <span id="prompts-state"></span></summary>
             <label class="field-label" for="home-pos">Positive</label>
-            <textarea id="home-pos" rows="4"></textarea>
+            <textarea id="home-pos" rows="4" data-fit></textarea>
             <label class="field-label" for="home-neg">Negative</label>
-            <textarea id="home-neg" rows="2"></textarea>
+            <textarea id="home-neg" rows="2" data-fit></textarea>
           </details>
           <p class="muted" id="prompt-note" style="font-size:12px;margin:8px 0 0"></p>
         </div>
@@ -985,6 +999,9 @@
         <legend>Checkpoint and LoRAs</legend>
         <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px">
           <label>Checkpoint <select name="defaults.checkpoint" class="checkpoint-select"><option value="">as saved in the workflow</option></select></label>
+          <label title="The checkpoint used wherever a job or generation says &quot;as saved in the workflow&quot;. Changing it saves it into the workflow file at once (the original stays as .orig.json).">Workflow's checkpoint
+            <select id="wf-checkpoint"></select></label>
+          <label>Checkpoints folder <input name="checkpoints_dir" placeholder="ComfyUI's own checkpoints folder"></label>
           <label>Output size
             <select name="defaults.size"><option value="auto">match the reference's shape</option>
               <option value="workflow">as saved in the workflow</option><option value="1024x1024">1024 × 1024 · square 1:1</option><option value="1152x896">1152 × 896 · landscape 4:3</option><option value="896x1152">896 × 1152 · portrait 3:4</option><option value="1216x832">1216 × 832 · landscape 3:2</option><option value="832x1216">832 × 1216 · portrait 2:3</option><option value="1344x768">1344 × 768 · widescreen 16:9</option><option value="768x1344">768 × 1344 · tall 9:16 (the workflow's)</option><option value="1536x640">1536 × 640 · ultrawide 21:9</option><option value="640x1536">640 × 1536 · tall 9:21</option></select>
@@ -996,6 +1013,7 @@
           <label>Max LoRAs at once <input name="loras.max_loras" type="number" min="1" max="6"></label>
           <label class="check" style="margin-top:18px"><input type="checkbox" name="loras.sweep">Round 1 compares LoRA sets on one seed</label>
         </div>
+        <p class="muted" id="ckpt-note" style="font-size:12px;margin:6px 0 0" hidden></p>
         <label style="margin-top:12px">LoRA folders the AI may choose from (one per line)
           <textarea name="loras.dirs" rows="2"></textarea></label>
         <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin-top:12px">
@@ -1008,6 +1026,20 @@
         <p class="muted" style="margin:8px 0 0">LoRAs outside these folders (such as a hand-fix LoRA) stay as saved in the workflow.
           The checkpoint's family (Pony, Illustrious, Flux) comes from its name; LoRAs made for another family are skipped.
           Flux checkpoints can't run in this SDXL workflow. The Civitai key is under API keys above.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Prompt writer guidelines</legend>
+        <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+          <label style="flex:1;min-width:220px">Model <select id="pp-model"></select></label>
+          <span class="muted" id="pp-state" style="font-size:12px;padding-bottom:8px"></span>
+          <button type="button" class="btn small" id="pp-reset">Restore default</button>
+          <button type="button" class="btn small primary" id="pp-save">Save guidelines</button>
+        </div>
+        <textarea id="pp-text" rows="18" spellcheck="false" style="margin-top:10px;font-family:ui-monospace,monospace;font-size:12px"></textarea>
+        <p class="muted" style="margin:8px 0 0">What the AI is told when it writes prompts (Write prompts, a generation written
+          at render time, an automatic run's first prompt) for a checkpoint of this model; the checkpoint lists show which
+          model each one is. The app adds its own reply format (JSON) and LoRA rules after this text, so an output section
+          here is overridden. Models without guidelines of their own use the general ones.</p>
       </fieldset>
       <fieldset>
         <legend>Auto-fix</legend>
@@ -1099,6 +1131,7 @@
     <div class="modal-head">
       <h3 id="lora-dialog-title">Add LoRAs</h3>
       <span class="muted" id="lora-dialog-count" style="font-size:12px"></span>
+      <span class="muted" id="lora-dialog-scope" style="font-size:12px"></span>
       <button class="btn primary" id="lora-dialog-done">Done</button>
     </div>
     <div id="lora-dialog-browser" class="lb-host"></div>
@@ -1155,6 +1188,33 @@ hydrateIcons();
 // An icon button for the card rows (History, Favorites, the saved libraries). attrs: its data-* etc.
 const ibtn = (name, title, attrs = "", cls = "", fill = false) =>
   `<button type="button" class="ibtn ${cls}" title="${esc(title)}" aria-label="${esc(title)}" ${attrs}>${icon(name, fill)}</button>`;
+// Prompt boxes (textarea[data-fit]) are as tall as their text plus FIT_LINES spare lines: when
+// they appear, when they're filled in (fitPrompt), when typed in, and when a hidden one shows
+// (its width goes from 0, which the ResizeObserver sees).
+const FIT_LINES = 4;
+function fitPrompt(ta) {
+  if (!ta || !ta.offsetParent) return;  // hidden: fitted when it shows
+  const cs = getComputedStyle(ta);
+  const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.45;
+  const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+  ta.style.height = "0px";  // measured from nothing: at "auto" its rows count as text
+  ta.style.height = `${Math.ceil(ta.scrollHeight + border + FIT_LINES * line)}px`;
+  ta.dataset.fitW = String(ta.clientWidth);
+}
+const fitWatch = new ResizeObserver(entries => entries.forEach(({target: t}) => {
+  if (t.offsetParent && String(t.clientWidth) !== t.dataset.fitW) fitPrompt(t);
+}));
+function watchFit(ta) {
+  if (!ta.dataset.fitWatched) { ta.dataset.fitWatched = "1"; fitWatch.observe(ta); }
+  fitPrompt(ta);
+}
+new MutationObserver(muts => muts.forEach(m => m.addedNodes.forEach(n => {
+  if (n.nodeType !== 1) return;
+  if (n.matches("textarea[data-fit]")) watchFit(n);
+  n.querySelectorAll("textarea[data-fit]").forEach(watchFit);
+}))).observe(document.body, {childList: true, subtree: true});
+document.querySelectorAll("textarea[data-fit]").forEach(watchFit);
+document.addEventListener("input", e => { if (e.target.matches?.("textarea[data-fit]")) fitPrompt(e.target); });
 // <details data-keep="x"> stay open or shut across the re-renders of polled state.
 const openKept = new Set();
 document.addEventListener("toggle", e => {
@@ -1177,6 +1237,7 @@ function toast(msg) {
 
 // ---- tabs ----
 function showTab(name) {
+  if (!$("#tab-" + name)) name = "home";
   $$(".sidebar [data-tab]").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $$("section.tab").forEach(s => s.classList.toggle("active", s.id === "tab-" + name));
   document.body.classList.remove("side-open");
@@ -1189,8 +1250,32 @@ function showTab(name) {
   if (name === "styles") loadRefs("style");
   if (name === "characters") loadRefs("character");
   if (name === "design") loadDesigns();
+  syncUrl();
 }
-$$(".sidebar [data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+// Each page has its own address (#history, #design/<id> for an open character), so a page can
+// be middle-clicked (or Ctrl-clicked) into its own browser tab and a reload stays on it.
+function pageUrl(name, design) { return "#" + name + (name === "design" && design ? "/" + encodeURIComponent(design) : ""); }
+function syncUrl() {
+  const name = $("section.tab.active")?.id.slice(4) || "home";
+  const url = pageUrl(name, designId);
+  if (location.hash !== url) history.replaceState(null, "", url);
+}
+function urlPage() {
+  const [name, design] = location.hash.slice(1).split("/");
+  return {name: name && $("#tab-" + name) ? name : "", design: name === "design" && design ? decodeURIComponent(design) : null};
+}
+// A plain click switches in place; a middle, Ctrl, Cmd or Shift click is left to the browser.
+const plainClick = e => e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
+$$(".sidebar [data-tab]").forEach(b => b.onclick = e => {
+  if (!plainClick(e)) return;
+  e.preventDefault(); showTab(b.dataset.tab);
+});
+window.addEventListener("hashchange", () => {  // an address typed or pasted into this tab
+  const {name, design} = urlPage();
+  if (!name) return;
+  if (name === "design" && design !== designId) { designId = design; designData = null; designTab = "edits"; $("#design-editor").innerHTML = ""; }
+  showTab(name);
+});
 // The menu button: on a wide window it folds the sidebar down to its icons (remembered); on a
 // narrow one the sidebar slides over the page and closes again when a page is picked.
 const narrow = () => matchMedia("(max-width: 800px)").matches;
@@ -1296,19 +1381,24 @@ function setRef(which, value) {
   syncPromptLock(); updateEstimate();
 }
 
-// The two ways of writing a prompt are exclusive: whichever side has text locks the other.
+// The description and the prompts can both be edited at any time. When generating, prompts
+// that have text are used as written; the description is only turned into prompts when they are empty.
 let writingPrompts = false;
+let promptError = "";  // why the last "Write prompts" failed, shown under the button
 function syncPromptLock() {
+  fitPrompt($("#home-pos")); fitPrompt($("#home-neg"));  // filled in from elsewhere
   const desc = $("#home-desc"), pos = $("#home-pos"), neg = $("#home-neg");
   const hasPrompts = pos.value.trim() || neg.value.trim();
   const hasDesc = desc.value.trim();
-  desc.disabled = !!hasPrompts;
-  pos.disabled = neg.disabled = !!hasDesc;
+  desc.disabled = pos.disabled = neg.disabled = false;
   const btn = $("#write-prompts");
   btn.disabled = writingPrompts || (!hasDesc && !anyTarget());
   if (!writingPrompts) btn.textContent = $("#prompt-loras").checked ? "Write prompts and choose LoRAs" : "Write prompts";
-  $("#prompt-note").textContent = hasPrompts
-    ? "Your prompts are in use. Clear them to describe it in words instead."
+  if (promptError) {  // stays until the next try, or until the text changes
+    $("#prompt-note").innerHTML = `<span style="color:var(--bad)">Write prompts failed: ${esc(promptError)}</span>`;
+  } else $("#prompt-note").textContent = hasPrompts
+    ? (hasDesc ? "Your prompts are used as written. Write prompts rewrites them from the description."
+       : "Your prompts are used as written.")
     : hasDesc ? "The LLM will turn this into a positive and negative prompt when you generate."
     : anyTarget() ? "With no description, the prompts are written from the style, subject and pose."
     : "Describe the image above, or open the prompts below and write them yourself.";
@@ -1336,19 +1426,23 @@ $("#clear-prompts").onclick = () => {
 };
 // With "Also choose LoRAs" the LoRAs are picked first, so the prompts can be written for
 // the whole set (their trigger words and what each one does).
+["home-desc", "home-pos", "home-neg"].forEach(id => $("#" + id).addEventListener("input", () => {
+  if (promptError) { promptError = ""; syncPromptLock(); }
+}));
 $("#write-prompts").onclick = async () => {
   const btn = $("#write-prompts");
-  writingPrompts = true; btn.disabled = true;
+  writingPrompts = true; btn.disabled = true; promptError = "";
   if ($("#prompt-loras").checked) { btn.textContent = "Choosing LoRAs…"; await chooseLoras(); }
   btn.textContent = "Writing prompts…";
   try {
     const r = await api("/api/prompt/preview", {
       description: $("#home-desc").value, targets: targetsForRequest(), loras: lorasForRequest(),
+      checkpoint: $("#g-checkpoint").value,  // so it writes the tags this model knows
       pose_library: targetOn("pose") ? ($("#pose-library").value || null) : null});
     $("#home-pos").value = r.positive || ""; $("#home-neg").value = r.negative || "";
     syncPromptLock();
     toast(r.notes ? "Prompts written: " + r.notes.slice(0, 80) : "Prompts written");
-  } catch (e) { toast(e.message); }
+  } catch (e) { promptError = e.message || "no answer from the server"; toast("Write prompts failed"); }
   writingPrompts = false; syncPromptLock(); updateEstimate();
 };
 
@@ -1590,7 +1684,13 @@ class LoraBrowser {
 // ---- Home: the picker dialog ----
 let pickBrowser = null;
 // The picker dialog adds to whichever list opened it: Generate's, or the character editor's.
-const genLoraTarget = {get: () => loraPicks, set: a => { loraPicks = a; renderPicks(); }};
+const genLoraTarget = {get: () => loraPicks, set: a => { loraPicks = a; renderPicks(); }, checkpoint: () => $("#g-checkpoint").value};
+// The LoRA folders that suit a checkpoint ("" = the workflow's), named for its model on the
+// server (NoobAI-XL for a NoobAI checkpoint); null when none is named for it (then all show).
+function loraFoldersFor(name) {
+  const c = (checkpointList?.items || []).find(x => x.name === (name || checkpointList?.default));
+  return c?.lora_folders || null;
+}
 let loraTarget = genLoraTarget;
 function updateDialogCount() {
   const n = loraTarget.get().length;
@@ -1605,7 +1705,16 @@ async function openLoraDialog(target) {
     onRemove: l => { loraTarget.set(loraTarget.get().filter(p => p.id !== l.id)); updateDialogCount(); },
   });
   updateDialogCount();
-  try { if (!pickBrowser.items.length) pickBrowser.setItems(await loadLoraCatalog()); else pickBrowser.refresh(); }
+  // Only the folders for the checkpoint in use; the LoRAs tab shows every folder.
+  const folders = loraFoldersFor(loraTarget.checkpoint?.());
+  $("#lora-dialog-scope").textContent = folders ? `· ${folders.join(", ")} folder${folders.length > 1 ? "s" : ""}, for this checkpoint` : "";
+  try {
+    const all = await loadLoraCatalog();
+    const items = folders ? all.filter(l => folders.includes(loraFolders(l)[0])) : all;
+    const key = (folders || ["*"]).join("|");
+    if (!pickBrowser.items.length || pickBrowser.scope !== key) { pickBrowser.scope = key; pickBrowser.setItems(items); }
+    else pickBrowser.refresh();
+  }
   catch (e) { $("#lora-dialog-browser [data-list]").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   $("#lora-dialog-browser [data-list]").focus();
 }
@@ -1661,7 +1770,7 @@ async function chooseLoras() {
   try {
     const r = await api("/api/loras/suggest", {
       positive: $("#home-pos").value.trim(), negative: $("#home-neg").value.trim(),
-      description: $("#home-desc").value.trim(), keep: lorasForRequest(),
+      description: $("#home-desc").value.trim(), keep: lorasForRequest(), checkpoint: $("#g-checkpoint").value,
       // every target the form has: uploads, or the saved style / character / pose chosen
       targets: targetsForRequest(), pose_library: targetOn("pose") ? ($("#pose-library").value || null) : null});
     const added = (r.picks || []).filter(p => !loraPicks.some(l => l.id === p.id));
@@ -1779,6 +1888,7 @@ function queueAhead() {
     sum + (g.status === "running" ? Math.max(0, (g.estimate || 0) - (g.elapsed || 0))
            : g.status === "waiting" ? (g.estimate || 0) : 0), 0);
 }
+const inSecs = t => `${Math.round(t)} s`;  // the Generate page counts in plain seconds
 const fmtSecs = t => { const s = Math.round(t); return s < 90 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`; };
 // Both IP-Adapters on: their weights add up, and past ~0.6 (status.ip_max_combined) the
 // render washes out. The server scales them down when rendering; this says so beforehand.
@@ -1802,8 +1912,8 @@ function updateEstimate() {
   const el = $("#gen-estimate"), est = estimateFor(genRequest());
   if (!est) { el.textContent = ""; return; }
   const ahead = queueAhead();
-  el.innerHTML = `Estimated time <b>~${fmtSecs(est.total)}</b>` + (ahead > 1 ? ` <span class="muted">(+ ~${fmtSecs(ahead)} queued ahead)</span>` : "");
-  el.title = est.parts.map(([k, t]) => `${k}: ~${fmtSecs(t)}`).join("\n") +
+  el.innerHTML = `Estimated time <b>~${inSecs(est.total)}</b>` + (ahead > 1 ? ` <span class="muted">(+ ~${inSecs(ahead)} queued ahead)</span>` : "");
+  el.title = est.parts.map(([k, t]) => `${k}: ~${inSecs(t)}`).join("\n") +
     (estRates.samples ? `\n\nFrom your last ${estRates.samples} renders.` : "\n\nA rough figure until you've rendered a few images.");
 }
 ["input", "change"].forEach(ev => $("#tab-home").addEventListener(ev, () => updateEstimate()));
@@ -2002,7 +2112,7 @@ function renderGenPanel(gens) {
     const est = running.estimate, el = running.elapsed || 0;
     if (est) setBar(Math.min(el / est, 0.97), el > est * 1.03); else setBar(0, true);
     status = `<span class="stage"><span class="spin"></span> ${kind(running)} · ${esc(running.state)} · ${Math.round(el)} s${
-      est ? ` of ~${fmtSecs(est)}` : ""}</span>`;
+      est ? ` of ~${inSecs(est)}` : ""}</span>`;
   } else {
     $("#gen-bar").classList.add("hide");
     status = !latest ? (fromHistory ? `Your last generation · ${esc(fromHistory.started)} · in <a href="#" data-goto="history">History</a>` : "Nothing generated yet.")
@@ -2016,7 +2126,16 @@ function renderGenPanel(gens) {
   // Images: the running task's as soon as it has them (auto-fix results follow), else the last finished.
   const show = running && (running.images || []).length ? running : latest || fromHistory;
   if ((show?.id ?? null) !== carKey) { carKey = show?.id ?? null; carIndex = 0; }  // a new set starts at its first image
+  const dotsScroll = $("#gen-images .car-dots")?.scrollLeft || 0;
   renderOnce("genimages", genImagesHtml(show), $("#gen-images"));
+  // The thumbnail strip is one scrolling row: a re-render keeps its place, and the
+  // current image's thumbnail stays in view as you step through them.
+  const dots = $("#gen-images .car-dots"), on = dots?.querySelector("button.active");
+  if (dots) {
+    dots.scrollLeft = dotsScroll;
+    if (on && (on.offsetLeft < dots.scrollLeft || on.offsetLeft + on.offsetWidth > dots.scrollLeft + dots.clientWidth))
+      dots.scrollLeft = on.offsetLeft - (dots.clientWidth - on.offsetWidth) / 2;
+  }
   renderOnce("genparams", show ? esc(show.params || "") : "", $("#gen-params"));
   if (latest && latest.id !== shownResult) {  // something new finished: the estimate learns from it
     if (shownResult !== null) loadEstimate();
@@ -2126,7 +2245,7 @@ async function copyText(text) {
 }
 function promptBox(label, id, text, rows) {
   return `<div class="prompt-box"><div class="label-row">${esc(label)} <button type="button" class="btn small" data-copy="#${id}">Copy</button></div>
-    <textarea id="${id}" rows="${rows}" readonly>${esc(text)}</textarea></div>`;
+    <textarea id="${id}" rows="${rows}" readonly data-fit>${esc(text)}</textarea></div>`;
 }
 
 // ---- state polling ----
@@ -3516,7 +3635,47 @@ $("#api-keys").addEventListener("keydown", e => {  // Enter in a key field saves
   if (e.key === "Enter" && e.target.dataset.keyInput) { e.preventDefault(); $(`[data-key-save="${e.target.dataset.keyInput}"]`).click(); }
 });
 
+// ---- Prompt writer guidelines, per model. Edits to one model are kept while you look at
+// another, until saved or the page reloads. ----
+let ppModels = [], ppDrafts = {};
+async function loadPreprompts(models) {
+  try { ppModels = models || (await api("/api/preprompts")).models || []; } catch { return; }
+  const sel = $("#pp-model"), cur = sel.value || ppModels[0]?.key;
+  sel.innerHTML = ppModels.map(m => `<option value="${esc(m.key)}">${esc(m.label)}</option>`).join("");
+  sel.value = cur; showPreprompt();
+}
+function showPreprompt() {
+  const m = ppModels.find(x => x.key === $("#pp-model").value);
+  if (!m) return;
+  $("#pp-text").value = ppDrafts[m.key] ?? m.text;
+  syncPreprompt();
+}
+function syncPreprompt() {
+  const m = ppModels.find(x => x.key === $("#pp-model").value);
+  if (!m) return;
+  const text = $("#pp-text").value, changed = text !== m.text;
+  if (changed) ppDrafts[m.key] = text; else delete ppDrafts[m.key];
+  const isDefault = text.trim() === m.default.trim();
+  $("#pp-state").textContent = changed ? "unsaved changes" : m.edited ? "your own version" : "default";
+  $("#pp-save").disabled = !changed;
+  $("#pp-reset").disabled = isDefault;
+}
+$("#pp-model").onchange = showPreprompt;
+$("#pp-text").addEventListener("input", syncPreprompt);
+async function savePreprompt(text) {
+  const key = $("#pp-model").value;
+  try {
+    const r = await api("/api/preprompts", {key, text});
+    delete ppDrafts[key];
+    await loadPreprompts(r.models);
+    toast(text === null ? "Default guidelines restored" : "Guidelines saved");
+  } catch (e) { toast(e.message); }
+}
+$("#pp-save").onclick = () => savePreprompt($("#pp-text").value);
+$("#pp-reset").onclick = () => savePreprompt(null);
+
 async function loadSettings() {
+  loadPreprompts();
   const s = await api("/api/settings"), f = $("#settings-form");
   $("#library-path").textContent = s.prompt_library;
   f.querySelector(`[name=backend][value=${s.judge.backend}]`).checked = true; toggleBackend();
@@ -3545,6 +3704,7 @@ async function loadSettings() {
   set("controlnet.pose_hands", cn.pose_hands ?? true); set("hands.denoise", hs.denoise ?? 0.6);
   for (const [k, v] of Object.entries(s.autofix || {})) set("autofix." + k, v);
   for (const [k, v] of Object.entries(s.upscale || {})) set("upscale." + k, v);
+  set("checkpoints_dir", s.checkpoints_dir || "");
   await loadCheckpoints();
   set("defaults.checkpoint", s.defaults.checkpoint || "");
   set("defaults.size", s.defaults.size || "auto");
@@ -3600,16 +3760,39 @@ $("#deepinfra-model").addEventListener("change", e => { setConfirmOptions([...e.
 $("#settings-form [name='openai.model']").addEventListener("change", e => applyPreset(e.target.value));
 
 let checkpointList = null;
+$("#wf-checkpoint").onchange = async e => {
+  const name = e.target.value;
+  try {
+    checkpointList = await api("/api/workflow/checkpoint", {name});
+    toast("Workflow's checkpoint is now " + stem(name));
+  } catch (err) { toast(err.message); }
+  loadCheckpoints();
+};
 async function loadCheckpoints() {
   try { checkpointList = await api("/api/checkpoints"); } catch { return; }
   for (const sel of $$(".checkpoint-select")) fillCheckpoints(sel, sel.value);
+  const wf = $("#wf-checkpoint"), cur = checkpointList.default || "";
+  wf.innerHTML = (checkpointList.items || []).map(c =>
+    `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(ckptKind(c))}</option>`).join("")
+    + (cur && !(checkpointList.items || []).some(c => c.name === cur) ? `<option value="${esc(cur)}">${esc(cur)} (not found)</option>` : "");
+  wf.value = cur;
+  // Under the Settings folder field: a folder that isn't there, or checkpoints in it that the
+  // running ComfyUI hasn't loaded (it adds the folder when Ouroboros next starts it).
+  const note = $("#ckpt-note"), c = checkpointList, missing = c.not_loaded || [];
+  note.hidden = !(c.folder_found === false || missing.length);
+  note.innerHTML = c.folder_found === false ? `<span style="color:var(--bad)">Checkpoints folder not found: ${esc(c.folder)}</span>`
+    : missing.length ? `${missing.length} checkpoint${missing.length > 1 ? "s" : ""} in this folder (${esc(missing.slice(0, 3).join(", "))}${missing.length > 3 ? ", …" : ""})
+        aren't loaded by the running ComfyUI. Stop it and press Start now below to load them; a ComfyUI
+        started from the Comfy Desktop app only sees the folders set in that app.` : "";
 }
 // The options from checkpointList (once loaded), keeping `value` even when it isn't listed:
 // a rerun before the list has loaded, or while ComfyUI is down and the list is empty.
+// "NoobAI-XL · v-pred", or the family when the model isn't recognised (ckpt_info.py).
+const ckptKind = c => (c.model && !c.model.startsWith("an ") ? c.model : c.base) + (c.vpred ? " · v-pred" : "");
 function fillCheckpoints(sel, value) {
   const first = sel.options[0].outerHTML, items = checkpointList?.items || [];
   sel.innerHTML = first + items.map(c =>
-    `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(c.base)}${c.name === checkpointList.default ? " (workflow)" : ""}${c.usable ? "" : " (not SDXL)"}</option>`).join("")
+    `<option value="${esc(c.name)}" ${c.usable ? "" : "disabled"}>${esc(c.name)} · ${esc(ckptKind(c))}${c.name === checkpointList.default ? " (workflow)" : ""}${c.usable ? "" : " (not SDXL)"}</option>`).join("")
     + (value && !items.some(c => c.name === value) ? `<option value="${esc(value)}">${esc(value)}${checkpointList?.items?.length ? " (not found)" : ""}</option>` : "");
   sel.value = value || "";
 }
@@ -3623,6 +3806,7 @@ $("#settings-form").onsubmit = async e => {
   const body = {
     designer: {threshold: num("designer.threshold")},
     comfy_url: val("comfy_url").value, prompt_library: val("prompt_library").value,
+    checkpoints_dir: val("checkpoints_dir").value.trim(),
     judge: {
       backend: f.querySelector("[name=backend]:checked").value,
       image_max_side: num("image_max_side"), contact_sheet: val("contact_sheet").checked,
@@ -3666,7 +3850,7 @@ $("#settings-form").onsubmit = async e => {
             dirs: val("loras.dirs").value.split("\n").map(s => s.trim()).filter(Boolean),
             comfy_root: val("loras.comfy_root").value, civitai_max_nsfw_level: num("loras.civitai_max_nsfw_level")},
   };
-  try { await api("/api/settings", body); toast("Settings saved"); loadStatus(); } catch (err) { toast(err.message); }
+  try { await api("/api/settings", body); toast("Settings saved"); loadStatus(); loadCheckpoints(); } catch (err) { toast(err.message); }
 };
 
 // ---- ComfyUI launcher ----
@@ -3737,6 +3921,7 @@ async function loadDesign() {
   renderDesigns();
 }
 function renderDesigns() {
+  if ($("#tab-design").classList.contains("active")) syncUrl();
   const el = $("#design-view");
   if (!designId) { $("#design-editor").classList.add("hide"); return renderOnce("designs", designGridHtml(), el); }
   if (!designData) return renderOnce("designs", `<div class="panel empty">Loading…</div>`, el);
@@ -3761,6 +3946,27 @@ function designGridHtml() {
     <div class="cards design-cards">${cards || `<div class="empty">No characters yet. Under a result on <b>Generate</b> press <b>Add to Edit Character</b>, or start from an image.</div>`}</div>
   </div>`;
 }
+// A card's prompts to Generate: a kept version's (its own settings over the character's), or
+// the render an edit card shows. The description is the one the character was made from on
+// Generate, if it was; the form's other settings stay as they are.
+function sendDesignPrompts(ds) {
+  const d = designData;
+  if (!d) return;
+  let p;
+  if (ds.dsend) {
+    const entry = d.catalog.find(e => e.image === ds.dsend);
+    p = {...(d.params || {}), ...(entry?.params || {})};
+  } else {
+    const s = d.sessions.find(x => x.id === ds.dsendSession);
+    p = s?.rounds.flatMap(r => r.candidates).find(c => c.image === ds.dsendImage)?.params || {};
+  }
+  if (!p.positive && !p.negative && !d.source_description) return toast("No prompts recorded for this image");
+  showTab("home"); window.scrollTo(0, 0);
+  $("#home-desc").value = d.source_description || "";
+  $("#home-pos").value = p.positive || ""; $("#home-neg").value = p.negative || "";
+  promptError = ""; syncPromptLock(); updateEstimate();
+  toast(`Prompts from “${d.name}” are on Generate`);
+}
 const designVersions = d => [
   {image: "original.png", url: d.original_url, thumb: d.original_thumb, label: d.original_name || "Original", original: true},
   ...d.catalog.map(e => ({...e, label: e.name || `${KIND_LABEL[e.kind] || e.kind}: ${e.change.replace(/^\w+( · |: )?/, "") || e.kind}`}))];
@@ -3776,9 +3982,10 @@ function designDetailHtml(d) {
       ${v.original || v.score == null ? "" : `<div class="note">Initial: ${fmt(v.first_score ?? v.score)} · ${esc(v.judge_model || "model not recorded")}
         <br>Confirmation: ${v.recheck != null ? `${fmt(v.recheck)} · ${esc(v.confirm_model || "model not recorded")}` : "not checked"}</div>`}
       ${v.original ? "" : compareButton(d.original_url, v.url)}
-      <div class="acts four">
+      <div class="acts five">
         ${ibtn("star", cover ? "Shown on the character's card" : "Show this one on the character's card",
                `data-dcover="${esc(v.image)}"`, cover ? "fav-on" : "", cover)}
+        ${ibtn("sparkles", "Send its prompts to Generate (positive, negative and the description)", `data-dsend="${esc(v.image)}"`)}
         ${ibtn("pencil", "Edit this one", `data-dedit="${esc(v.image)}"`)}
         <a class="ibtn" href="${esc(v.url)}" download="${esc(dlName(v.url))}" title="Save to disk" aria-label="Save to disk">${icon("download")}</a>
         ${v.original ? ibtn("trash", "The original stays", "disabled")
@@ -3835,8 +4042,11 @@ function designEditCardHtml(d, s) {
     <div class="name" title="${esc(title)}">${esc(title)}</div>
     <div class="muted" style="font-size:12px"><span class="status ${cls}">${esc(live ? (s.job?.state || "waiting") : status)}</span> ·
       ${manual ? `${all.length} rendered` : `best ${fmt(s.best?.score)} / ${fmt(thr)}`} · ${fmt(s.size_mb)} MB</div>
-    <div class="acts four">
+    <div class="acts five">
       ${ibtn("eye", on ? "Hide its renders" : "Show all its renders", `data-dsshow="${esc(s.id)}"`, on ? "fav-on" : "")}
+      ${pic?.params ? ibtn("sparkles", "Send this render's prompts to Generate (positive, negative and the description)",
+                           `data-dsend-session="${esc(s.id)}" data-dsend-image="${esc(pic.image)}"`)
+                    : ibtn("sparkles", "No render to take prompts from yet", "disabled")}
       ${live ? (s.job ? ibtn("stop", "Stop", `data-dstop="${esc(s.job.id)}"`, "danger") : ibtn("stop", "Waiting", "disabled"))
              : ibtn("rerun", manual ? "Render again (a random seed is new each time)" : "One more round", `data-dmore="${esc(s.id)}"`)}
       ${manual ? ibtn("pencil", "Edit these settings", `data-dagain="${esc(s.id)}"`) : ibtn("pencil", "A new edit from the same image", `data-dagain="${esc(s.id)}"`)}
@@ -3961,8 +4171,8 @@ async function openDesignEdit(base, from) {
       <div data-mode="manual" class="hide">
         <p class="note" style="margin:8px 0">Filled in with the settings that made the image you start from. Change what you like and Render;
           the results land in <b>Versions and edits</b>, where you can keep them.</p>
-        <label>Positive prompt <textarea name="m_positive" rows="7"></textarea></label>
-        <label>Negative prompt <textarea name="m_negative" rows="4"></textarea></label>
+        <label>Positive prompt <textarea name="m_positive" rows="7" data-fit></textarea></label>
+        <label>Negative prompt <textarea name="m_negative" rows="4" data-fit></textarea></label>
         <label>Draw from <select name="m_mode">
           <option value="same_noise">its own noise: the same seed and place in its batch (a small prompt change keeps the character)</option>
           <option value="noise">new noise: the seed below</option>
@@ -4034,6 +4244,7 @@ async function openDesignEdit(base, from) {
     el.m_mode.options[0].disabled = !own;
     el.m_mode.value = q?.mode || (own ? "same_noise" : "img2img");
     el.m_positive.value = m.positive || ""; el.m_negative.value = m.negative || "";
+    fitPrompt(el.m_positive); fitPrompt(el.m_negative);
     el.m_steps.value = m.steps ?? 30; el.m_cfg.value = m.cfg ?? 5.5;
     const pick = (sel, v) => {  // the image's value, listed even if this list doesn't have it
       if (!v) return;
@@ -4071,7 +4282,8 @@ async function openDesignEdit(base, from) {
   el.auto.onchange = syncMode; el.m_mode.onchange = syncMode;
   [el.m_pose_on, el.m_subject_on, el.m_style_on, el.m_pose_src].forEach(x => x.onchange = syncMode);
   $$("[name=base]", f).forEach(r => r.onchange = () => fill(el.base.value));
-  $("[data-mloras]", f).onclick = () => openLoraDialog({get: () => manualLoras, set: a => { manualLoras = a; renderManualLoras(); }});
+  $("[data-mloras]", f).onclick = () => openLoraDialog({get: () => manualLoras, set: a => { manualLoras = a; renderManualLoras(); },
+                                                     checkpoint: () => el.m_checkpoint.value});
   $("#dedit-loras").addEventListener("input", e => {
     const i = e.target.dataset.mstrength;
     if (i != null) { manualLoras[i].strength = Number(e.target.value); e.target.nextElementSibling.textContent = e.target.value; }
@@ -4164,6 +4376,7 @@ $("#tab-design").addEventListener("click", async e => {
     if (shownSession) $("#dsess-detail")?.scrollIntoView({behavior: "smooth", block: "start"});
     return;
   }
+  if (ds.dsend || ds.dsendSession) return sendDesignPrompts(ds);
   if (ds.dagain) {
     const s = designData?.sessions.find(x => x.id === ds.dagain);
     return s && openDesignEdit(s.base, s.manual);  // a manual edit's settings; an automatic one's start
@@ -4208,6 +4421,20 @@ $("#tab-design").addEventListener("click", async e => {
   if (ds.dmore) return designCall("/api/designs/continue", {id: designId, session: ds.dmore}, () => toast("One more round queued"));
   if (ds.dstop) return designCall("/api/generations/remove", {id: ds.dstop}, () => toast("Stopping…"));
 });
+// Middle click (or Ctrl/Cmd click) on a character card opens it in its own browser tab.
+$("#tab-design").addEventListener("mousedown", e => {
+  if (e.button === 1 && e.target.closest("[data-design-open]")) e.preventDefault();  // no autoscroll
+});
+$("#tab-design").addEventListener("auxclick", e => {
+  const c = e.button === 1 && e.target.closest("[data-design-open]");
+  if (c) { e.preventDefault(); window.open(pageUrl("design", c.dataset.designOpen), "_blank"); }
+});
+$("#tab-design").addEventListener("click", e => {
+  const c = e.target.closest("[data-design-open]");
+  if (c && (e.ctrlKey || e.metaKey) && !e.target.closest("button, a, input, select")) {
+    e.preventDefault(); e.stopImmediatePropagation(); window.open(pageUrl("design", c.dataset.designOpen), "_blank");
+  }
+}, true);
 $("#tab-design").addEventListener("keydown", e => {
   const c = e.target.closest?.("[data-design-open]");
   if (c && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); c.click(); }
@@ -4251,6 +4478,8 @@ setInterval(() => {
 
 // ---- boot ----
 let startTab = "home"; try { startTab = localStorage.getItem("tab") || "home"; } catch {}
+const startUrl = urlPage();
+if (startUrl.name) { startTab = startUrl.name; designId = startUrl.design; }
 showTab(startTab);
 loadStatus(); setInterval(loadStatus, 20000);
 loadCheckpoints();

@@ -234,7 +234,9 @@ Each page owns one thing: Home makes images, Queue lists jobs, History holds fin
 browses the library, Poses / Styles / Characters manage the saved ones, Settings holds the defaults.
 
 **Layout.** The pages are in a sidebar (the menu button folds it to icons, or on a phone slides
-it over the page); the top bar holds the ComfyUI / Judge / Workflows status and **Generate**,
+it over the page). Each page has its own address (`#history`, `#settings`, and `#design/<id>`
+for an open character), so a middle click or Ctrl-click on a sidebar item or a character card
+opens it in a new browser tab, and a reload stays on the page; the top bar holds the ComfyUI / Judge / Workflows status and **Generate**,
 which goes back to Home. There is no start button: queuing a job (Run automatically, Run again,
 a prompt-library Queue) starts the loop, and **Stop after round** shows while it runs. A chime plays when a Home generation finishes, and a longer one when an automatic run or a Designer edit does. Home keeps
 the form on the left and the result on the right, in view while the form scrolls: a carousel of
@@ -559,6 +561,58 @@ the workflow's Width and Height nodes.
 guessed from its name; override that in `checkpoint_bases` in config if a name misleads.
 Flux checkpoints are greyed out, since this workflow is SDXL.
 
+**Which model it is** (`ckpt_info.py`). Each checkpoint is recognised as Pony Diffusion V6,
+Illustrious-XL, NoobAI-XL, Animagine XL, Flux or a general SDXL model, from its file name
+first and otherwise from its safetensors header (`modelspec.title`, `modelspec.merged_from`,
+kohya `ss_*` keys); `checkpoint_bases` in config still wins for the family. The header's
+`v_pred` / `ztsnr` marker tensors (or `modelspec.prediction_type`) mark a v-prediction model;
+ComfyUI reads the same markers, so it samples it correctly. Many checkpoints carry no
+metadata (WAI-Illustrious has none, NoobAI only training counters), so the name stays the
+main clue. The lists show the model ("NoobAI-XL · v-pred").
+
+The LLMs are told: the prompt writer (Write prompts, a generation written at render time,
+an automatic run's first prompt) gets a CHECKPOINT section with the model and its tag
+conventions (Pony score_/source_ tags; Illustrious and NoobAI quality tags such as
+"masterpiece, best quality, newest"), and replaces quality tags made for another family.
+Before, it was told every model was Pony and copied the workflow's score tags. For a model
+that isn't Pony-based, score_/source_/rating_ tags the LLM still copies are removed in code
+(tags you wrote yourself stay). The judge's rules and the sampler-settings advisor get the
+same model line (the advisor also learns it is v-prediction).
+
+**Workflow's checkpoint** (Settings): the checkpoint used wherever a job, generation or
+Settings says "as saved in the workflow" (marked "(workflow)" in the lists). Changing it
+writes the new name into the workflow file's checkpoint input (the `checkpoint` role in
+`nodes.json`) straight away; the first change keeps the original file as `<name>.orig.json`.
+
+**Checkpoints folder** (`checkpoints_dir`, Settings next to the Checkpoint picker): where
+Ouroboros looks for checkpoints. When Ouroboros starts ComfyUI, it adds this folder to
+ComfyUI's checkpoint folders with a second model-paths file (`logs/comfy_model_paths.yaml`,
+`--extra-model-paths-config`); Comfy Desktop's own one is passed as before, and a folder
+ComfyUI already has is skipped. With ComfyUI down, the list is read from the folder
+(subfolders too). If a running ComfyUI lacks checkpoints that are in the folder (it was
+started before the folder was chosen, or by the desktop app), Settings lists them and says
+to restart it.
+
+**LoRA folder per checkpoint** (`loras.lora_folders_for`). The folders right under the loras
+root (`loras.comfy_root`) are matched to checkpoints by name, like checkpoints are
+(`ckpt_info.py`): `Pony` serves Pony and AutismMix checkpoints, `NoobAI-XL` a NoobAI one. A
+checkpoint with no folder named for its model gets the folders of its family (an Illustrious
+checkpoint gets `NoobAI-XL`, NoobAI being Illustrious-based), and one with none at all
+(Flux, an unrecognised SDXL) gets every LoRA, filtered by base model as before.
+`loras.checkpoint_folders` (`{"name part": ["Folder", ...]}`) overrides the choice. The
+folder decides what the automatic run's picker (and so the judge's LoRA menu) may use, what
+**Also choose LoRAs** offers, and what the **Add LoRAs** dialog on Generate and in the manual
+character editor lists (with "Pony folder, for this checkpoint" beside the title); the LoRAs
+tab still shows every folder. NoobAI LoRAs count as Illustrious-family in the base-model check.
+
+A folder the lora-classifier hasn't classified (none of its files has a state there; folders
+holding caution or pending LoRAs never qualify) is still in the library: each LoRA is a basic
+card from its file's metadata ("Not classified yet"), and **Refresh** on the LoRAs tab looks
+those files up on Civitai (title, trigger words, base model, images). Only they are read
+then; the classified ones come from the catalog. When Ouroboros starts ComfyUI it also
+passes the loras root as a LoRA folder (`logs/comfy_model_paths.yaml`), so LoRAs in a new
+folder load without linking it into ComfyUI's own `models/loras`.
+
 **LoRA choice** (`loras.mode`, per job overridable):
 
 - **auto**: the judge picks style LoRAs from the folders in `loras.dirs` (default
@@ -718,6 +772,13 @@ are shown to it so it adds only what they lack and nothing that fights them (a s
 or pose). The prompts are then written for the full set. A generation whose prompt the LLM
 writes at render time (description only) is written for its selected LoRAs the same way.
 
+With LoRA notes in the request, Qwen3-VL sometimes repeats one tag until the token limit
+(4096 tokens took 125-130 s, past the 120 s read timeout, so the request failed). The
+writer's calls therefore run under `backends.capped_output`: at most `PROMPT_TOKENS` (1536)
+tokens and a mild `frequency_penalty` (0.3). A loop now ends in about 45 s as a cut-off
+reply, and the retry raises the penalty to 0.5. A failure stays under the button as
+"Write prompts failed: ..." until the description or prompts are edited.
+
 **What the writer is told** (`prompter.INSTRUCTIONS`) was tested by rendering written
 prompts and judging the renders against their references (three references, two prompts
 each, three seeds). A stricter rewrite was tried first: Danbooru tags only, 30-60 tags, at
@@ -763,6 +824,10 @@ more can be added while one renders. ComfyUI is started, if needed, when a task'
 The Result panel follows the queue: the running task's stage and progress (against the time
 estimate it was queued with), how many wait behind it, and the images of whatever finished
 last. The time estimate on Home adds what's still queued ahead.
+
+Waiting on ComfyUI (`ComfyClient.wait`) gives up after 600 s per prompt only if
+the prompt has left ComfyUI's queue. While it is still running or queued, the deadline is
+extended, so a long batch is no longer cut off with "Timed out waiting for ComfyUI".
 
 The Queue tab lists the generations (running, waiting with their place in line, and the
 last dozen finished) above the automatic-run jobs. **Remove** (two clicks) drops a waiting
@@ -880,6 +945,12 @@ below. A version kept from these renders records the same, so it can be edited t
 On Generate, **Remake just this one** (under a result, and in History's Tools) loads that run's
 settings with the batch's seed and the image's place: edit the prompt and Generate draws only
 that image (`batch_pick` in the request).
+
+**Send its prompts to Generate** (the sparkles button on a kept version's card, and on an
+edit's card for the render it shows) puts that image's positive and negative prompts on
+Generate, with the description the character was made from (the "describe it" box of the
+History run it was added from, `server._source_description`), so the LLM can write from it
+again. Generate's other settings stay as they are.
 
 An **edit** changes exactly one of three things, and is optimised toward the starting image
 everywhere else (`designer.py`, a queue task of kind `design`):

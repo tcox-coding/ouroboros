@@ -140,3 +140,19 @@ def test_an_answer_cut_off_while_reasoning_gets_more_room(monkeypatch):
     b = backends.DeepInfraBackend({"model": "test", "retries": 0, "max_tokens": 4096})
     b.complete("", [], {}, "t", 512)
     assert sent[1]["max_tokens"] == 8192 and "frequency_penalty" not in sent[1]
+
+
+def test_a_capped_call_has_a_short_answer_limit_and_a_mild_penalty_and_the_settings_come_back(monkeypatch):
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test")
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append(dict(json))
+        return ok({"ok": True})
+    monkeypatch.setattr(backends.requests, "post", post)
+    b = backends.DeepInfraBackend({"model": "x", "retries": 0, "max_tokens": 4096, "temperature": 0})
+    with backends.capped_output(b, 1536):
+        b.complete("", [], {}, "t", 512)
+    assert sent[0]["max_tokens"] == 1536 and sent[0]["frequency_penalty"] == 0.3
+    b.complete("", [], {}, "t", 512)
+    assert sent[1]["max_tokens"] == 4096 and "frequency_penalty" not in sent[1]  # restored after

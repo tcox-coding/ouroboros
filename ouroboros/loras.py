@@ -48,7 +48,12 @@ def checkpoint_base(name: str, overrides: dict | None = None) -> str:
         return "Illustrious"
     if "pony" in n or "autismmix" in n:
         return "Pony"
-    return "SDXL"
+    try:  # the name doesn't say: the file's metadata may (e.g. a merge listing Pony in merged_from)
+        from .ckpt_info import lookup
+        from .runner import load_config
+        return lookup(name, load_config())["family"]
+    except Exception:
+        return "SDXL"
 
 
 def compatible(lora_base: str | None, ckpt_base: str) -> bool | None:
@@ -56,6 +61,8 @@ def compatible(lora_base: str | None, ckpt_base: str) -> bool | None:
     if not lora_base:
         return None
     lb = lora_base.lower()
+    if "noob" in lb:  # NoobAI is trained on Illustrious: its LoRAs are Illustrious-family
+        lb = "illustrious"
     cb = ckpt_base.lower()
     if cb == "flux":
         return "flux" in lb
@@ -100,6 +107,33 @@ def clean_prompt(prompt: str) -> str:
     return re.sub(r"\s*,\s*,", ",", LORA_TAG.sub("", prompt or "")).strip(" ,")
 
 
+def lora_folders_for(checkpoint: str | None, cfg: dict) -> list[str] | None:
+    """The folders under the loras root whose LoRAs suit a checkpoint, chosen by folder name:
+    the ones named for its model ("NoobAI-XL" for a NoobAI checkpoint), else the ones for its
+    family (Illustrious and NoobAI folders for an Illustrious checkpoint). None when no folder
+    is named for it: then every LoRA is a candidate and the base-model check decides.
+    loras.checkpoint_folders ({name part: [folders]}) overrides the choice."""
+    from .ckpt_info import folder_model, lookup
+    root = Path((cfg.get("loras") or {}).get("comfy_root") or "")
+    if not checkpoint or not str(root).strip() or not root.is_dir():
+        return None
+    for part, folders in ((cfg.get("loras") or {}).get("checkpoint_folders") or {}).items():
+        if part.lower() in checkpoint.lower():
+            return list(folders)
+    info = lookup(checkpoint, cfg)
+    tops = {d.name: folder_model(d.name) for d in sorted(root.iterdir()) if d.is_dir()}
+    exact = [name for name, m in tops.items() if m and m[0] == info["model"]]
+    return exact or [name for name, m in tops.items() if m and m[1] == info["family"]] or None
+
+
+def in_folders(name: str, folders: list[str] | None) -> bool:
+    """Whether a LoRA (as ComfyUI names it) is under one of the folders (None: any)."""
+    return folders is None or name.replace("\\", "/").split("/", 1)[0] in folders
+
+
+_offline: dict[tuple, dict] = {}  # LoRA records read from file metadata, by (path, size, mtime)
+
+
 class LoraLibrary:
     def __init__(self, cfg: dict, cache_dir: Path):
         self.cfg = cfg
@@ -121,25 +155,63 @@ class LoraLibrary:
         words and the weight range its own test renders supported. The folder scan below
         is the fallback for setups without a catalog.
         """
-        catalog_dir = (self.cfg.get("catalog_dir") or "").strip()
-        if catalog_dir and (Path(catalog_dir) / "state").is_dir():
+        if self.catalog_dir():
             from .lora_catalog import records
             try:
-                return records(Path(catalog_dir), self.cache_dir)
+                out = records(self.catalog_dir(), self.cache_dir)
             except (OSError, ValueError):
-                pass
+                out = None
+            if out is not None:  # plus the folders it hasn't classified (e.g. a new NoobAI-XL folder)
+                return {**self.unclassified(), **out}
         try:
             return json.loads(self.index_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
+    def catalog_dir(self) -> Path | None:
+        d = (self.cfg.get("catalog_dir") or "").strip()
+        return Path(d) if d and (Path(d) / "state").is_dir() else None
+
+    def unclassified_dirs(self) -> list[Path]:
+        """Folders right under the loras root that hold no LoRA the classifier knows: a
+        folder added for another model family before the classifier has run on it."""
+        root, cat = self.comfy_root, self.catalog_dir()
+        if cat is None or not str(self.cfg.get("comfy_root") or "").strip() or not root.is_dir():
+            return []
+        from .lora_catalog import known_files
+        known = known_files(cat)
+        return [d for d in sorted(root.iterdir()) if d.is_dir() and "caution" not in d.name.lower()
+                and not any(p.name.lower() in known for p in d.rglob("*.safetensors"))]
+
+    def unclassified(self) -> dict[str, dict]:
+        """name -> index record for the LoRAs in unclassified_dirs(): the refreshed one from
+        lora_index.json when it is current, else one read from the file's own metadata."""
+        try:
+            saved = json.loads(self.index_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+        out = {}
+        for d in self.unclassified_dirs():
+            for path in sorted(p for p in d.rglob("*.safetensors") if p.is_file()):
+                name, st = self.comfy_name(path), path.stat()
+                rec = saved.get(name)
+                if not (rec and rec.get("size") == st.st_size and rec.get("mtime") == st.st_mtime):
+                    key = (str(path), st.st_size, st.st_mtime)
+                    if key not in _offline:
+                        _offline[key] = self._build(path, name, st, False, lambda m: None)
+                    rec = _offline[key]
+                out[name] = rec
+        return out
+
     def files(self) -> list[Path]:
         """Every .safetensors under the configured dirs, however deeply nested: the
         library is sorted into folders (styles/artists, styles/anime/western, ...) and
         each of those may gain sub-folders. ComfyUI names a LoRA by its path below the
-        loras root, so nesting changes the name, not whether it can be used."""
+        loras root, so nesting changes the name, not whether it can be used.
+        With the classifier's catalog, only the folders it hasn't classified: the rest
+        it already describes."""
         out = []
-        for d in self.dirs:
+        for d in (self.unclassified_dirs() if self.catalog_dir() else self.dirs):
             if d.is_dir():
                 out += sorted(p for p in d.rglob("*.safetensors") if p.is_file())
         return out

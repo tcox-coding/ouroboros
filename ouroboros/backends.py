@@ -173,6 +173,41 @@ _IMAGE_LIMITS: dict[str, int] = {}  # model -> images per request, from its "Too
 MAX_OUTPUT_TOKENS = 32768  # ceiling when a truncated answer is retried with more room
 
 
+class capped_output:
+    """`with capped_output(backend, tokens, penalty):` caps a call's answer and adds a mild
+    repetition penalty, for tasks with a short answer. A prompt is 500-650 tokens; Qwen3-VL at
+    temperature 0 sometimes repeats a tag ("hairline at toes, ...") to its 4096-token limit,
+    which took ~125 s, past the 120 s read timeout, so the reply never came back to be retried
+    (2 of 4 "Write prompts" with LoRA notes, 2026-10-06). Capped, the loop ends in ~45 s and is
+    retried nudged off it; a reasoning model that runs out is still given more room."""
+
+    def __init__(self, backend, tokens: int, penalty: float = 0.3):
+        self.cfg = getattr(backend, "cfg", None)
+        self.set = {}
+        if isinstance(self.cfg, dict) and isinstance(backend, DeepInfraBackend):
+            self.set = {"max_tokens": min(int(self.cfg.get("max_tokens") or tokens), tokens),
+                        "frequency_penalty": max(float(self.cfg.get("frequency_penalty") or 0), penalty)}
+        elif isinstance(self.cfg, dict) and isinstance(backend, OllamaBackend):
+            self.set = {"num_predict": min(int(self.cfg.get("num_predict") or tokens), tokens)}
+        self.saved = {}
+
+    def __enter__(self):
+        for k, v in self.set.items():
+            self.saved[k] = self.cfg.get(k, _MISSING)
+            self.cfg[k] = v
+        return self
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is _MISSING:
+                self.cfg.pop(k, None)
+            else:
+                self.cfg[k] = v
+
+
+_MISSING = object()
+
+
 class CompletionError(RuntimeError):
     """A failed completion can still have billed attempts."""
     def __init__(self, message, cost_usd=0.0, prompt_tokens=0):
@@ -299,7 +334,7 @@ class DeepInfraBackend:
         # seed is passed through when set, but don't count on it: with
         # DeepSeek-V4.1-Flash, three calls at seed 42 still gave two different answers
         # (hosted MoE inference isn't deterministic). Left in for models that do honour it.
-        for k in ("temperature", "top_p", "max_tokens", "reasoning_effort", "seed"):
+        for k in ("temperature", "top_p", "max_tokens", "reasoning_effort", "seed", "frequency_penalty"):
             if self.cfg.get(k) is not None:
                 body[k] = self.cfg[k]
 
@@ -382,7 +417,7 @@ class DeepInfraBackend:
                 # a 40-minute "Write prompts" (2026-10-05). Retry nudged off the loop instead.
                 tail = (message.get("content") or "")[-120:]
                 problem = f"kept repeating itself until max_tokens ({body.get('max_tokens', '?')}): ...{tail!r}"
-                if "frequency_penalty" not in body:
+                if float(body.get("frequency_penalty") or 0) < 0.5:
                     body["frequency_penalty"] = 0.5
                     body["temperature"] = max(float(body.get("temperature") or 0), 0.4)
                     attempts += 1  # the nudged retry shouldn't count
